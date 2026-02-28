@@ -24,7 +24,7 @@ write.socrata(
 
 \item{password}{- The password associated with the email to the Socrata account}
 
-\item{app_token}{- a (non-required) string; SODA API token can be used to query the data 
+\item{app_token}{- a (non-required) string; SODA API token can be used to query the data
 portal \url{https://dev.socrata.com/consumers/getting-started.html}}
 }
 \description{

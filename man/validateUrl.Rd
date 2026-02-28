@@ -9,7 +9,7 @@ validateUrl(url, app_token)
 \arguments{
 \item{url}{- a string; character vector of length one}
 
-\item{app_token}{- a string; SODA API token used to query the data 
+\item{app_token}{- a string; SODA API token used to query the data
 portal \url{https://dev.socrata.com/consumers/getting-started.html}}
 }
 \value{

@@ -1,0 +1,385 @@
+###############################################################################
+# socratr: Interface to Socrata Datsets using SODA 3
+# Updated for modern Socrata API Standards
+###############################################################################
+
+#' Time-stamped message
+#' @noRd
+logMsg <- function(s) {
+  cat(
+    format(Sys.time(), "%Y-%m-%d %H:%M:%OS3 "),
+    as.character(sys.call(-1))[1],
+    ": ",
+    s,
+    '\n',
+    sep = ''
+  )
+}
+
+#' Fetch modernized User Agent for SODA 3
+#' @noRd
+fetch_user_agent <- function() {
+  header <- paste0(
+    "RSocrata3/1.0.0 (",
+    Sys.info()[["sysname"]],
+    "; R/",
+    paste0(R.version$major, ".", R.version$minor),
+    "; SODA3-Compatible)"
+  )
+  return(header)
+}
+
+#' Validate SODA 3 Identifiers (4x4)
+#' @export
+isFourByFour <- function(fourByFour) {
+  grepl("^[[:alnum:]]{4}-[[:alnum:]]{4}$", as.character(fourByFour))
+}
+
+#' Convert URL to SODA 3 API Endpoint
+#' @export
+validateUrl <- function(url, app_token = NULL) {
+  parsedUrl <- httr::parse_url(as.character(url))
+
+  if (is.null(parsedUrl$scheme) | is.null(parsedUrl$hostname)) {
+    stop(url, " is not a valid URL.")
+  }
+
+  # Ensure we are pointing to the resource path for SODA 3
+  path_parts <- strsplit(parsedUrl$path, "/")[[1]]
+  fourByFour <- tail(path_parts, 1)
+  fourByFour <- gsub("\\.csv|\\.json", "", fourByFour)
+
+  if (!isFourByFour(fourByFour)) {
+    stop("Could not find a valid 4x4 dataset ID in the URL.")
+  }
+
+  # Standardize to .csv for high-volume read performance in SODA 3
+  parsedUrl$path <- paste0("resource/", fourByFour, ".csv")
+
+  # Handle App Token in Query (Fall back to header in getResponse)
+  if (!is.null(app_token) && is.null(parsedUrl$query[["$$app_token"]])) {
+    parsedUrl$query$`$$app_token` <- as.character(app_token)
+  }
+
+  return(httr::build_url(parsedUrl))
+}
+
+#' SODA 3 Date/Time Conversion
+#' @export
+posixify <- function(x) {
+  if (length(x) == 0) {
+    return(x)
+  }
+  # SODA 3 uses ISO 8601 strings
+  parsed <- lubridate::parse_date_time(
+    as.character(x),
+    orders = c("YmdHMS", "YmdHM", "Ymd", "mdy"),
+    quiet = TRUE
+  )
+  if (all(is.na(parsed))) {
+    return(x)
+  }
+  return(as.POSIXct(parsed))
+}
+
+#' Internal GET with SODA 3 specific headers
+#' @noRd
+#' Internal GET with SODA 3 specific headers
+#' @noRd
+getResponse <- function(url, email = NULL, password = NULL, app_token = NULL) {
+  config <- list(httr::user_agent(fetch_user_agent()))
+
+  # 1. Add App Token Header if provided
+  if (!is.null(app_token)) {
+    config <- c(config, list(httr::add_headers("X-App-Token" = app_token)))
+  }
+
+  # 2. Add Auth if provided (SODA 3 Key/Secret)
+  if (!is.null(email) && !is.null(password)) {
+    config <- c(config, list(httr::authenticate(email, password)))
+  }
+
+  response <- httr::GET(url, config)
+
+  # Handle errors gracefully
+  if (response$status_code != 200) {
+    # Log the specific Socrata error message if available
+    logMsg(paste("SODA 3 Error:", response$status_code, url))
+  }
+
+  httr::stop_for_status(response)
+  return(response)
+}
+
+#' Read Socrata Data using SODA 3 Query Service and Cursors
+#' @export
+read_socrata <- function(
+  url,
+  soql_query = "SELECT *",
+  app_token = NULL,
+  email = NULL,
+  password = NULL
+) {
+  # 1. Standardize URL to the SODA 3 Query Endpoint
+  parsed <- httr::parse_url(url)
+  fourByFour <- basename(gsub("\\.csv|\\.json", "", parsed$path))
+
+  # SODA 3 Query Service URL structure
+  query_url <- paste0(
+    parsed$scheme,
+    "://",
+    parsed$hostname,
+    "/api/v3/views/",
+    fourByFour,
+    "/query"
+  )
+
+  all_data <- list()
+  cursor <- NULL
+
+  repeat {
+    # Build the request config
+    config <- list(httr::user_agent(fetch_user_agent()))
+
+    # Headers
+    headers <- list("Accept" = "text/csv")
+    if (!is.null(app_token)) {
+      headers[["X-App-Token"]] <- app_token
+    }
+    if (!is.null(cursor)) {
+      headers[["X-Socrata-Cursor"]] <- cursor
+    }
+    config <- c(config, list(httr::add_headers(.headers = unlist(headers))))
+
+    # Auth (SODA 3 Key/Secret)
+    if (!is.null(email) && !is.null(password)) {
+      config <- c(config, list(httr::authenticate(email, password)))
+    }
+
+    query_body <- list(
+      query = soql_query,
+      limit = 50000
+    )
+
+    # Execute Request
+    # We use a POST request to the query service as it's more robust for SODA 3
+    response <- httr::POST(
+      query_url,
+      config,
+      body = query_body,
+      encode = "json"
+    )
+
+    if (response$status_code != 200) {
+      stop(
+        "SODA 3 Error: ",
+        response$status_code,
+        " - ",
+        httr::content(response, as = "text")
+      )
+    }
+
+    # Parse the CSV chunk
+    df_page <- readr::read_csv(
+      httr::content(response, as = "text", encoding = "UTF-8"),
+      col_types = readr::cols(.default = "c"),
+      show_col_types = FALSE
+    )
+
+    if (nrow(df_page) == 0) {
+      break
+    }
+    all_data[[length(all_data) + 1]] <- df_page
+
+    # 2. Extract the Next Cursor from Headers
+    cursor <- response$headers[["x-socrata-next-cursor"]]
+
+    # If there is no next cursor, we have reached the end of the dataset
+    if (is.null(cursor) || cursor == "") {
+      break
+    }
+
+    logMsg(paste(
+      "Fetched page. Rows so far:",
+      nrow(do.call(rbind, lapply(all_data, head, 0)))
+    ))
+  }
+
+  result <- dplyr::bind_rows(all_data)
+
+  # Auto-clean names and convert types (SomerStat standard)
+  result <- janitor::clean_names(result)
+
+  return(result)
+}
+
+#' List Datasets using SODA 3 Discovery API
+#' @export
+ls_socrata <- function(domain) {
+  # Clean domain to get hostname
+  hostname <- httr::parse_url(domain)$hostname
+  if (is.null(hostname)) {
+    hostname <- domain
+  }
+
+  # SODA 3 Discovery API Endpoint
+  #
+  discovery_url <- paste0(
+    "https://api.us.socrata.com/api/catalog/v1?domains=",
+    hostname
+  )
+
+  response <- getResponse(discovery_url)
+  content <- jsonlite::fromJSON(httr::content(response, as = "text"))
+
+  datasets <- content$results$resource
+  metadata <- content$results$classification
+
+  # Combine into a clean listing
+  df <- data.frame(
+    name = datasets$name,
+    id = datasets$id,
+    type = datasets$type,
+    updated = posixify(datasets$updatedAt),
+    description = datasets$description,
+    stringsAsFactors = FALSE
+  )
+
+  return(df)
+}
+
+#' SODA 3 Upsert/Replace
+#' @export
+write_socrata <- function(
+  dataframe,
+  dataset_url,
+  update_mode = "UPSERT",
+  email,
+  password,
+  app_token = NULL
+) {
+  # SODA 3 targets the JSON endpoint for writes
+  parsed <- httr::parse_url(dataset_url)
+  parsed$path <- gsub("\\.csv", ".json", parsed$path)
+  if (!grepl("\\.json$", parsed$path)) {
+    parsed$path <- paste0(parsed$path, ".json")
+  }
+
+  url <- httr::build_url(parsed)
+  verb <- if (update_mode == "UPSERT") httr::POST else httr::PUT
+
+  response <- verb(
+    url,
+    body = jsonlite::toJSON(dataframe, auto_unbox = TRUE),
+    httr::authenticate(email, password),
+    httr::add_headers(
+      "X-App-Token" = app_token,
+      "Content-Type" = "application/json"
+    ),
+    httr::user_agent(fetch_user_agent())
+  )
+
+  httr::stop_for_status(response)
+  return(response)
+}
+
+#' SODA 3 Bulk Revision (Replace or Update)
+#' @param dataframe The R data frame to upload
+#' @param dataset_id The 4x4 ID of the dataset
+#' @param domain The Socrata domain
+#' @param action "replace" or "update"
+#' @export
+bulk_revision_socrata <- function(
+  dataframe,
+  dataset_id,
+  domain,
+  action,
+  email,
+  password,
+  app_token = NULL
+) {
+  base_url <- paste0("https://", domain, "/api/publishing/v1/revisions")
+  auth_config <- httr::authenticate(email, password)
+  base_headers <- httr::add_headers(
+    "X-App-Token" = app_token,
+    "Content-Type" = "application/json"
+  )
+
+  # 1. CREATE REVISION
+  logMsg("Opening SODA 3 Revision...")
+  rev_body <- list(
+    metadata = list(name = paste0("Bulk Update ", Sys.time())),
+    action = list(type = action)
+  )
+
+  # POST to create a new revision on an existing 4x4
+  rev_resp <- httr::POST(
+    paste0(base_url, "/", dataset_id),
+    auth_config,
+    base_headers,
+    body = jsonlite::toJSON(rev_body, auto_unbox = TRUE)
+  )
+  httr::stop_for_status(rev_resp)
+  rev_info <- httr::content(rev_resp)
+
+  # 2. CREATE SOURCE & UPLOAD CSV
+  # CSV is significantly faster for Socrata to ingest than JSON
+  logMsg("Streaming CSV source...")
+  tmp_csv <- tempfile(fileext = ".csv")
+  readr::write_csv(dataframe, tmp_csv, na = "")
+
+  source_url <- paste0(base_url, "/", dataset_id, "/", rev_info$id, "/sources")
+  source_body <- list(
+    source_type = list(type = "upload", filename = "data_upload.csv"),
+    parse_options = list(parse_source = TRUE)
+  )
+
+  source_resp <- httr::POST(
+    source_url,
+    auth_config,
+    base_headers,
+    body = jsonlite::toJSON(source_body, auto_unbox = TRUE)
+  )
+  source_info <- httr::content(source_resp)
+
+  # Upload the actual bytes
+  upload_url <- paste0(
+    base_url,
+    "/",
+    dataset_id,
+    "/",
+    rev_info$id,
+    "/sources/",
+    source_info$id,
+    "/chunks"
+  )
+  upload_resp <- httr::POST(
+    upload_url,
+    auth_config,
+    httr::add_headers("Content-Type" = "text/csv"),
+    body = httr::upload_file(tmp_csv)
+  )
+  httr::stop_for_status(upload_resp)
+
+  # 3. APPLY REVISION (Publish)
+  logMsg("Publishing Revision...")
+  apply_url <- paste0(base_url, "/", dataset_id, "/", rev_info$id, "/apply")
+  apply_resp <- httr::PUT(apply_url, auth_config, base_headers)
+
+  httr::stop_for_status(apply_resp)
+  logMsg("Success! Dataset updated via SODA 3 Bulk Revision.")
+
+  unlink(tmp_csv) # Clean up temp file
+  return(apply_resp)
+}
+
+#' Generate a SODA 3 Base URL
+#' @param dataset_id The 4x4 ID (e.g., "4pyi-uqq6")
+#' @param domain The Socrata domain
+#' @return A clean base URL string
+#' @export
+generate_soda3_url <- function(dataset_id, domain) {
+  # We return just the base components so read_socrata can
+  # decide whether to use /resource or /api/v3/views/query
+  paste0("https://", domain, "/", dataset_id)
+}

@@ -20,7 +20,8 @@ Imports:
     httr (>= 1.0.0),
     jsonlite (>= 0.9.16),
     mime (>= 0.3),
-    plyr (>= 1.8.4)
+    plyr (>= 1.8.4),
+    lubridate (>= 1.7.0),
 Suggests:
     testthat (>= 0.10.0),
     roxygen2 (>= 4.1.0),
@@ -28,5 +29,5 @@ Suggests:
 License: MIT + file LICENSE
 URL: https://github.com/Chicago/RSocrata
 BugReports: https://github.com/Chicago/RSocrata/issues
-RoxygenNote: 7.2.3
+RoxygenNote: 7.3.3
 Encoding: UTF-8

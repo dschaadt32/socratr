@@ -13,14 +13,14 @@ read.socrata(
 )
 }
 \arguments{
-\item{url}{- A Socrata resource URL, 
-or a Socrata "human-friendly" URL, 
-or Socrata Open Data Application Program Interface (SODA) query 
-requesting a comma-separated download format (.csv suffix), 
-May include SoQL parameters, 
+\item{url}{- A Socrata resource URL,
+or a Socrata "human-friendly" URL,
+or Socrata Open Data Application Program Interface (SODA) query
+requesting a comma-separated download format (.csv suffix),
+May include SoQL parameters,
 but is assumed to not include a SODA offset parameter}
 
-\item{app_token}{- a string; SODA API token used to query the data 
+\item{app_token}{- a string; SODA API token used to query the data
 portal \url{https://dev.socrata.com/consumers/getting-started.html}}
 
 \item{email}{- Optional. The email to the Socrata account with read access to the dataset}
@@ -49,7 +49,7 @@ privateResourceToReadCsvUrl <- "https://soda.demo.socrata.com/resource/a9g2-feh2
 read.socrata(url = privateResourceToReadCsvUrl, email = socrataEmail, password = socrataPassword)
 # Using an API key to read datasets (reduces throttling)
 token <- "ew2rEMuESuzWPqMkyPfOSGJgE"
-df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.csv", 
+df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.csv",
                    app_token = token)
 nrow(df)
 closeAllConnections()

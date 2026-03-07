@@ -1,591 +1,950 @@
+library(testthat)
+library(httr2)
 
-context("posixify function")
+# Credentials — set these as env vars; never hard-code in tests.
+# Sys.setenv(SOCRATA_USER = "...", SOCRATA_SECRET = "...", SOCRATA_TOKEN = "...")
+socrata_user <- Sys.getenv("SOCRATA_USER")
+socrata_password <- Sys.getenv("SOCRATA_PASSWORD")
+app_token <- Sys.getenv("SOCRATA_TOKEN")
 
-test_that("read Socrata CSV is compatible with posixify", {
+# Shared demo dataset (1007 rows, always public)
+DEMO_URL <- "https://soda.demo.socrata.com/resource/4334-bgaj"
+DEMO_NROWS <- 1007L
+
+###############################################################################
+# Group 1 — Date parsing
+###############################################################################
+
+test_that("posixify: ISO 8601 (SODA 3)", {
+  expect_equal(
+    format(posixify("2012-09-14T22:38:01"), "%Y-%m-%d %H:%M:%S"),
+    "2012-09-14 22:38:01"
+  )
+})
+
+test_that("posixify: legacy Socrata CSV format (mm/dd/yyyy hh:mm:ss PM)", {
+  expect_equal(
+    format(posixify("09/14/2012 10:38:01 PM"), "%Y-%m-%d %H:%M:%S"),
+    "2012-09-14 22:38:01"
+  )
+})
+
+test_that("posixify: date-only string", {
+  expect_equal(format(posixify("2012-09-14"), "%Y-%m-%d"), "2012-09-14")
+})
+
+test_that("posixify: vectorised input", {
+  v <- posixify(c("2024-01-01", "2024-06-15T12:00:00"))
+  expect_length(v, 2L)
+  expect_s3_class(v, "POSIXct")
+})
+
+test_that("posixify: NA passthrough", {
+  expect_true(is.na(posixify(NA_character_)))
+})
+
+test_that("posixify: empty input returns zero-length POSIXct", {
+  result <- posixify(character(0L))
+  expect_s3_class(result, "POSIXct")
+  expect_length(result, 0L)
+})
+
+test_that("posixify: unparseable string warns and returns NA", {
+  expect_warning(result <- posixify("not-a-date"), "could not be parsed")
+  expect_true(is.na(result))
+})
+
+###############################################################################
+# Group 2 — Identifier validation
+###############################################################################
+
+test_that("is_four_by_four: valid IDs", {
+  expect_true(is_four_by_four("4334-bgaj"))
+  expect_true(is_four_by_four("ABCD-1234")) # uppercase is valid
+  expect_true(all(is_four_by_four(c("aaaa-1111", "zzzz-9999"))))
+})
+
+test_that("is_four_by_four: invalid IDs", {
+  expect_false(is_four_by_four("4334-bgaj-extra"))
+  expect_false(is_four_by_four("4334_bgaj"))
+  expect_false(is_four_by_four("tooshort"))
+  expect_false(is_four_by_four(""))
+})
+
+test_that("is_four_by_four: vectorised", {
+  expect_equal(
+    is_four_by_four(c("abcd-1234", "bad", "ef01-ab23")),
+    c(TRUE, FALSE, TRUE)
+  )
+})
+
+###############################################################################
+# Group 3 — Input validation (no network)
+###############################################################################
+
+test_that("read_socrata: empty url errors", {
+  expect_error(read_socrata(""), "non-empty")
+  expect_error(read_socrata("   "), "non-empty")
+})
+
+test_that("read_socrata: url without http scheme errors", {
+  expect_error(
+    read_socrata("soda.demo.socrata.com/resource/4334-bgaj"),
+    "4x4" # resolve_dataset will fail to find a valid ID in a bare domain
+  )
+})
+
+test_that("read_socrata: url with no valid 4x4 errors", {
+  expect_error(
+    read_socrata("https://soda.demo.socrata.com/resource/invalid-id-here"),
+    "4x4"
+  )
+})
+
+test_that("read_socrata: bare 4x4 without domain errors", {
+  expect_error(read_socrata("4334-bgaj"), "domain")
+})
+
+test_that("read_socrata: invalid page_size errors", {
+  expect_error(read_socrata(DEMO_URL, page_size = 0L), "page_size")
+  expect_error(read_socrata(DEMO_URL, page_size = 100000L), "page_size")
+  expect_error(read_socrata(DEMO_URL, page_size = -1L), "page_size")
+})
+
+test_that("write_socrata: non-data-frame input errors", {
+  expect_error(
+    write_socrata(
+      "not a df",
+      "example.gov",
+      "abcd-1234",
+      socrata_user = "x",
+      password = "y"
+    ),
+    "data frame"
+  )
+})
+
+test_that("write_socrata: invalid dataset_id errors", {
+  expect_error(
+    write_socrata(
+      data.frame(x = 1),
+      "example.gov",
+      "not-valid!!",
+      socrata_user = "x",
+      password = "y"
+    ),
+    "4x4"
+  )
+})
+
+test_that("write_socrata: empty domain errors", {
+  expect_error(
+    write_socrata(
+      data.frame(x = 1),
+      "",
+      "abcd-1234",
+      socrata_user = "x",
+      password = "y"
+    ),
+    "domain"
+  )
+})
+
+test_that("ls_socrata: invalid limit errors", {
+  expect_error(ls_socrata("example.gov", limit = 0L), "limit")
+  expect_error(ls_socrata("example.gov", limit = -5L), "limit")
+})
+
+###############################################################################
+# Group 4 — Live API: basic reads  (skip on CRAN & when creds absent)
+###############################################################################
+
+skip_live <- function() {
   skip_on_cran()
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv')
-  dt <- posixify("09/14/2012 10:38:01 PM")
-  expect_equal(dt, df$datetime[1])  ## Check that download matches test
+  skip_if(
+    !nzchar(socrata_user) && !nzchar(app_token),
+    "No Socrata credentials available — set SOCRATA_USER/SOCRATA_SECRET or SOCRATA_TOKEN."
+  )
+}
+
+test_that("read_socrata: returns a tibble from a full URL", {
+  skip_live()
+  df <- read_socrata(DEMO_URL, app_token = app_token)
+  expect_s3_class(df, "tbl_df")
+  expect_gt(nrow(df), 0L)
 })
 
-test_that("read Socrata JSON is compatible with posixify (issue 85)", {
+test_that("read_socrata: bare 4x4 + domain works identically to full URL", {
+  skip_live()
+  df_url <- read_socrata(DEMO_URL, app_token = app_token)
+  df_id <- read_socrata(
+    "4334-bgaj",
+    domain = "soda.demo.socrata.com",
+    app_token = app_token
+  )
+  expect_equal(nrow(df_url), nrow(df_id))
+  expect_equal(names(df_url), names(df_id))
+})
+
+test_that("read_socrata: soql SELECT limits columns returned", {
+  skip_live()
+  df <- read_socrata(DEMO_URL, soql = "SELECT region", app_token = app_token)
+  expect_s3_class(df, "tbl_df")
+  expect_equal(ncol(df), 1L)
+  expect_named(df, "region")
+})
+
+test_that("read_socrata: soql WHERE filters rows", {
+  skip_live()
+  df_all <- read_socrata(DEMO_URL, app_token = app_token)
+  regions <- unique(df_all$region)
+  target <- regions[[1L]]
+  df_filtered <- read_socrata(
+    DEMO_URL,
+    soql = sprintf("SELECT * WHERE region = '%s'", target),
+    app_token = app_token
+  )
+  expect_gt(nrow(df_filtered), 0L)
+  expect_lt(nrow(df_filtered), nrow(df_all))
+  expect_true(all(df_filtered$region == target))
+})
+
+test_that("read_socrata: pagination retrieves all rows across multiple pages", {
+  skip_live()
+  # Force multiple pages by using a small page_size; verify total row count.
+  df <- read_socrata(
+    DEMO_URL,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    # app_token = app_token,
+    page_size = 200L
+  )
+  expect_equal(nrow(df), DEMO_NROWS)
+})
+
+test_that("read_socrata: max_rows caps the result", {
+  skip_live()
+  df <- read_socrata(DEMO_URL, app_token = app_token, max_rows = 50L)
+  expect_lte(nrow(df), 50L)
+  expect_gt(nrow(df), 0L)
+})
+
+test_that("read_socrata: column names are clean_names'd", {
+  skip_live()
+  df <- read_socrata(DEMO_URL, app_token = app_token)
+  # clean_names produces snake_case; no spaces or leading/trailing punctuation
+  expect_true(all(grepl("^[a-z0-9_]+$", names(df))))
+})
+
+test_that("read_socrata: all columns are character", {
+  skip_live()
+  df <- read_socrata(DEMO_URL, app_token = app_token)
+  col_classes <- vapply(df, class, character(1L))
+  expect_true(all(col_classes == "character"))
+})
+
+test_that("read_socrata: ISO 8601 dates parse correctly via posixify", {
+  skip_live()
+  # NYC 311 — 'created_date' is a clean ISO 8601 timestamp field
+  df <- read_socrata(
+    "https://data.cityofnewyork.us/resource/erm2-nwe9",
+    soql = "SELECT created_date",
+    app_token = app_token,
+    max_rows = 20L
+  )
+  expect_false(all(is.na(posixify(df$created_date))))
+})
+
+###############################################################################
+# Group 5 — Live API: regression tests
+###############################################################################
+
+test_that("Regression #19: sparse datasets with missing fields across pages", {
+  # rbindlist(fill=TRUE) must handle columns that appear only on some pages.
+  skip_live()
+  df <- read_socrata(
+    "https://data.cityofchicago.org/resource/kn9c-c2s2",
+    app_token = app_token
+  )
+  expect_gt(nrow(df), 0L)
+  expect_true("community_area_name" %in% names(df))
+})
+
+###############################################################################
+# Group 6 — Live API: authentication
+###############################################################################
+
+test_that("App token is accepted and does not 401/403", {
+  skip_live()
+  skip_if(!nzchar(app_token), "SOCRATA_TOKEN not set.")
+  df <- read_socrata(DEMO_URL, app_token = app_token)
+  expect_s3_class(df, "tbl_df")
+})
+
+test_that("Basic auth (API key + secret) is accepted", {
+  skip_live()
+  skip_if(
+    !nzchar(socrata_user) || !nzchar(socrata_password),
+    "SOCRATA_USER / SOCRATA_SECRET not set."
+  )
+  df <- read_socrata(
+    DEMO_URL,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  expect_s3_class(df, "tbl_df")
+})
+
+test_that("Unauthenticated request to a private dataset throws an error", {
   skip_on_cran()
-  ## Define and test issue 85
-  df <- read.socrata('https://soda.demo.socrata.com/resource/9szf-fbd4.json')
-  dt <- posixify("09/14/2012 10:38:01 PM")
-  expect_equal(dt, df$datetime[1], info= "Testing Issue 85 https://github.com/Chicago/RSocrata/issues/85")  ## Check that download matches test
+  # This dataset requires auth; should get HTTP 401/403
+  expect_error(
+    read_socrata("https://data.cityofchicago.org/resource/j8vp-2qpg"),
+    regexp = NULL # any error is correct — we just want it to throw
+  )
 })
 
-test_that("read Socrata JSON that uses ISO 8601 but does not specify subseconds", {
+###############################################################################
+# Group 7 — Live API: dataset discovery
+###############################################################################
+
+test_that("ls_socrata: returns a tibble with expected columns", {
+  skip_live()
+  df <- ls_socrata("soda.demo.socrata.com", limit = 10L)
+  expect_s3_class(df, "tbl_df")
+  expect_true(all(c("name", "id", "type", "updated", "url") %in% names(df)))
+})
+
+test_that("ls_socrata: 'updated' column is POSIXct", {
+  skip_live()
+  df <- ls_socrata("soda.demo.socrata.com", limit = 5L)
+  expect_s3_class(df$updated, "POSIXct")
+})
+
+test_that("ls_socrata: search filter reduces results", {
+  skip_live()
+  df_all <- ls_socrata("data.cityofchicago.org", limit = 100L)
+  df_search <- ls_socrata(
+    "data.cityofchicago.org",
+    limit = 100L,
+    search = "permits"
+  )
+  expect_lte(nrow(df_search), nrow(df_all))
+})
+
+test_that("ls_socrata: unknown domain returns empty tibble with a message", {
   skip_on_cran()
-  df <- read.socrata('https://data.cityofnewyork.us/resource/qcdj-rwhu.json') # Not from #121, but smaller for shorter test process
-  expect_false(anyNA(df$app_status_date), info= "Testing issue 121 https://github.com/Chicago/RSocrata/issues/121")
+  expect_message(
+    result <- ls_socrata("this.domain.does.not.exist.socrata.com"),
+    "No datasets found"
+  )
+  expect_equal(nrow(result), 0L)
 })
 
-test_that("posixify returns Long format", {
-  dt <- posixify("09/14/2012 10:38:01 PM")
-  expect_equal("POSIXct", class(dt)[1], label="Long format date data type")
-  expect_equal("2012", format(dt, "%Y"), label="year")
-  expect_equal("09", format(dt, "%m"), label="month")
-  expect_equal("14", format(dt, "%d"), label="day")
-  expect_equal("22", format(dt, "%H"), label="hours")
-  expect_equal("38", format(dt, "%M"), label="minutes")
-  expect_equal("01", format(dt, "%S"), label="seconds")
+test_that("ls_socrata: leading https:// in domain is stripped gracefully", {
+  skip_live()
+  df1 <- ls_socrata("soda.demo.socrata.com", limit = 5L)
+  df2 <- ls_socrata("https://soda.demo.socrata.com", limit = 5L)
+  expect_equal(nrow(df1), nrow(df2))
 })
 
+###############################################################################
+# Group 8 — get_metadata() input validation (no network)
+###############################################################################
 
-test_that("posixify returns Short format", {
-  dt <- posixify("09/14/2012")
-  expect_equal("POSIXct", class(dt)[1], label="Short format date data type")
-  expect_equal("2012", format(dt, "%Y"), label="year")
-  expect_equal("09", format(dt, "%m"), label="month")
-  expect_equal("14", format(dt, "%d"), label="day")
-  expect_equal("00", format(dt, "%H"), label="hours")
-  expect_equal("00", format(dt, "%M"), label="minutes")
-  expect_equal("00", format(dt, "%S"), label="seconds")
+test_that("get_metadata: empty url errors", {
+  expect_error(get_metadata(""), "non-empty|4x4")
+  expect_error(get_metadata("   "), "non-empty|4x4")
 })
 
-context("Socrata Calendar")
+test_that("get_metadata: bare 4x4 without domain errors", {
+  expect_error(get_metadata("4334-bgaj"), "domain")
+})
 
-test_that("Calendar Date Short", {
+test_that("get_metadata: invalid 4x4 in URL errors", {
+  expect_error(
+    get_metadata("https://soda.demo.socrata.com/resource/not-valid-here")
+  )
+})
+
+###############################################################################
+# Group 9 — coerce_socrata_types() unit tests (no network)
+###############################################################################
+
+test_that("coerce_socrata_types: rejects non-data-frame df", {
+  fake_meta <- list(
+    columns = data.frame(
+      field_name = "x",
+      data_type = "number",
+      stringsAsFactors = FALSE
+    )
+  )
+  expect_error(coerce_socrata_types("not a df", fake_meta), "data frame")
+})
+
+test_that("coerce_socrata_types: rejects meta without columns", {
+  expect_error(
+    coerce_socrata_types(data.frame(x = "1"), list(id = "abc")),
+    "get_metadata"
+  )
+})
+
+test_that("coerce_socrata_types: number columns become numeric", {
+  df <- tibble::tibble(value = c("1.5", "2.0", "3.7"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "value",
+      data_type = "number",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$value, "double")
+  expect_equal(result$value, c(1.5, 2.0, 3.7))
+})
+
+test_that("coerce_socrata_types: calendar_date columns become POSIXct", {
+  df <- tibble::tibble(opened = c("2024-01-15T10:30:00", "2024-06-01T00:00:00"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "opened",
+      data_type = "calendar_date",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_s3_class(result$opened, "POSIXct")
+})
+
+test_that("coerce_socrata_types: checkbox columns become logical", {
+  df <- tibble::tibble(active = c("true", "false", "true"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "active",
+      data_type = "checkbox",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$active, "logical")
+  expect_equal(result$active, c(TRUE, FALSE, TRUE))
+})
+
+test_that("coerce_socrata_types: text columns stay character", {
+  df <- tibble::tibble(name = c("Alice", "Bob"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "name",
+      data_type = "text",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$name, "character")
+})
+
+test_that("coerce_socrata_types: unknown type columns stay character", {
+  df <- tibble::tibble(geo = c("POINT(1 2)", "POINT(3 4)"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "geo",
+      data_type = "multipolygon",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$geo, "character")
+})
+
+test_that("coerce_socrata_types: columns not in metadata are untouched", {
+  df <- tibble::tibble(a = c("1", "2"), b = c("x", "y"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "a",
+      data_type = "number",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$a, "double")
+  expect_type(result$b, "character") # 'b' not in meta, stays character
+})
+
+test_that("coerce_socrata_types: clean_names normalisation matches read_socrata output", {
+  # read_socrata applies make_clean_names; metadata field names must be normalised
+  # the same way. Test that "My Column" -> "my_column" matches correctly.
+  df <- tibble::tibble(my_column = c("1.0", "2.0"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "My Column", # raw name as returned by API
+      data_type = "number",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$my_column, "double")
+})
+
+###############################################################################
+# Group 10 — read_socrata_parallel() input validation (no network)
+###############################################################################
+
+test_that("read_socrata_parallel: empty url errors", {
+  expect_error(read_socrata_parallel(""), "non-empty")
+  expect_error(read_socrata_parallel("   "), "non-empty")
+})
+
+test_that("read_socrata_parallel: invalid page_size errors", {
+  expect_error(read_socrata_parallel(DEMO_URL, page_size = 0L), "page_size")
+  expect_error(
+    read_socrata_parallel(DEMO_URL, page_size = 100000L),
+    "page_size"
+  )
+})
+
+test_that("read_socrata_parallel: invalid max_active errors", {
+  expect_error(read_socrata_parallel(DEMO_URL, max_active = 0L), "max_active")
+  expect_error(read_socrata_parallel(DEMO_URL, max_active = 11L), "max_active")
+})
+
+test_that("read_socrata_parallel: bare 4x4 without domain errors", {
+  expect_error(read_socrata_parallel("4334-bgaj"), "domain")
+})
+
+###############################################################################
+# Group 11 — write_socrata_parallel() input validation (no network)
+###############################################################################
+
+test_that("write_socrata_parallel: non-data-frame errors", {
+  expect_error(
+    write_socrata_parallel(
+      "not df",
+      "example.gov",
+      "abcd-1234",
+      socrata_user = "x",
+      password = "y"
+    ),
+    "data frame"
+  )
+})
+
+test_that("write_socrata_parallel: invalid dataset_id errors", {
+  expect_error(
+    write_socrata_parallel(
+      data.frame(x = 1),
+      "example.gov",
+      "bad!!",
+      socrata_user = "x",
+      password = "y"
+    ),
+    "4x4"
+  )
+})
+
+test_that("write_socrata_parallel: invalid max_active errors", {
+  expect_error(
+    write_socrata_parallel(
+      data.frame(x = 1),
+      "example.gov",
+      "abcd-1234",
+      socrata_user = "x",
+      password = "y",
+      max_active = 0L
+    ),
+    "max_active"
+  )
+  expect_error(
+    write_socrata_parallel(
+      data.frame(x = 1),
+      "example.gov",
+      "abcd-1234",
+      socrata_user = "x",
+      password = "y",
+      max_active = 11L
+    ),
+    "max_active"
+  )
+})
+
+###############################################################################
+# Group 12 — get_metadata() live tests
+###############################################################################
+
+test_that("get_metadata: returns a list with expected structure", {
+  skip_live()
+  meta <- get_metadata(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  expect_type(meta, "list")
+  expect_true(all(c("id", "name", "description", "columns") %in% names(meta)))
+})
+
+test_that("get_metadata: columns tibble has expected columns", {
+  skip_live()
+  meta <- get_metadata(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  expect_s3_class(meta$columns, "tbl_df")
+  expect_true(all(
+    c("field_name", "display_name", "data_type") %in% names(meta$columns)
+  ))
+})
+
+test_that("get_metadata: no system columns (starting with ':') in output", {
+  skip_live()
+  meta <- get_metadata(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  expect_false(any(grepl("^:", meta$columns$field_name)))
+})
+
+test_that("get_metadata: field_names match column names returned by read_socrata", {
+  skip_live()
+  meta <- get_metadata(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  df <- socrata_read(DEMO_URL, max_rows = 1L)
+
+  # After clean_names, metadata field names should all appear in df
+  clean_fields <- janitor::make_clean_names(meta$columns$field_name)
+  expect_true(all(clean_fields %in% names(df)))
+})
+
+###############################################################################
+# Group 13 — coerce_socrata_types() live tests
+###############################################################################
+
+test_that("coerce_socrata_types: round-trips correctly against a live dataset", {
+  skip_live()
+  meta <- get_metadata(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+  df <- socrata_read(DEMO_URL, max_rows = 50L)
+
+  # All columns should be character before coercion
+  expect_true(all(vapply(df, is.character, logical(1L))))
+
+  df_typed <- coerce_socrata_types(df, meta)
+
+  # At minimum, numeric columns should no longer be character
+  number_cols <- janitor::make_clean_names(
+    meta$columns$field_name[
+      meta$columns$data_type %in% c("number", "money", "double")
+    ]
+  )
+  number_cols <- intersect(number_cols, names(df_typed))
+  if (length(number_cols) > 0L) {
+    expect_true(all(vapply(df_typed[number_cols], is.numeric, logical(1L))))
+  }
+})
+
+###############################################################################
+# Group 14 — read_socrata_parallel() live tests
+###############################################################################
+
+test_that("read_socrata_parallel: returns a tibble", {
+  skip_live()
+  df <- read_socrata_parallel(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    page_size = 500L
+  )
+  expect_s3_class(df, "tbl_df")
+  expect_gt(nrow(df), 0L)
+})
+
+test_that("read_socrata_parallel: retrieves same row count as serial read", {
+  skip_live()
+  df_serial <- read_socrata(
+    DEMO_URL,
+    socrata_user = socrata_user,
+    password = socrata_password,
+  )
+  df_parallel <- read_socrata_parallel(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    page_size = 200L,
+    max_active = 3L
+  )
+  expect_equal(nrow(df_parallel), nrow(df_serial))
+})
+
+test_that("read_socrata_parallel: column names match serial read", {
+  skip_live()
+  df_serial <- read_socrata(
+    DEMO_URL,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    max_rows = 1L
+  )
+  df_parallel <- read_socrata_parallel(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    max_rows = 1L
+  )
+  expect_equal(sort(names(df_parallel)), sort(names(df_serial)))
+})
+
+test_that("read_socrata_parallel: max_rows caps the result", {
+  skip_live()
+  df <- read_socrata_parallel(
+    DEMO_URL,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password,
+    max_rows = 100L,
+    page_size = 50L
+  )
+  expect_lte(nrow(df), 100L)
+  expect_gt(nrow(df), 0L)
+})
+
+test_that("read_socrata_parallel: soql filter is applied correctly", {
+  skip_live()
+  df_all <- read_socrata(
+    DEMO_URL,
+    socrata_user = socrata_user,
+    password = socrata_password,
+  )
+  target <- unique(df_all$region)[[1L]]
+
+  df_filtered <- read_socrata_parallel(
+    DEMO_URL,
+    soql = sprintf("SELECT * WHERE region = '%s'", target),
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = socrata_password
+  )
+
+  expect_true(all(df_filtered$region == target))
+  expect_lt(nrow(df_filtered), nrow(df_all))
+  expect_equal(df_filtered, df_all %>% dplyr::filter(region == target))
+})
+
+###############################################################################
+# Group 9 — write_socrata / write_socrata_parallel live round-trip
+#
+# Uses the public writable Socrata demo datasets:
+#   xh6g-yugi — small dataset, used for UPSERT tests
+#   kc76-ybeq — small dataset, used for REPLACE tests
+#
+# Each test writes known data, reads it back, and verifies the values match.
+# Requires valid credentials (SOCRATA_USER + SOCRATA_SECRET).
+###############################################################################
+
+WRITE_UPSERT_URL  <- "https://soda.demo.socrata.com/resource/xh6g-yugi"
+WRITE_REPLACE_URL <- "https://soda.demo.socrata.com/resource/kc76-ybeq"
+WRITE_ID_UPSERT   <- "xh6g-yugi"
+WRITE_ID_REPLACE  <- "kc76-ybeq"
+WRITE_DOMAIN      <- "soda.demo.socrata.com"
+
+skip_write <- function() {
   skip_on_cran()
-  df <- read.socrata('https://data.cityofchicago.org/resource/y93d-d9e3.csv?$order=debarment_date')
-  dt <- df$debarment_date[1] # "05/21/1981"
-  expect_equal("POSIXct", class(dt)[1], label="data type of a date")
-  expect_equal("81", format(dt, "%y"), label="year")
-  expect_equal("05", format(dt, "%m"), label="month")
-  expect_equal("21", format(dt, "%d"), label="day")
-  expect_equal("00", format(dt, "%H"), label="hours")
-  expect_equal("00", format(dt, "%M"), label="minutes")
-  expect_equal("00", format(dt, "%S"), label="seconds")
+  skip_if(
+    !nzchar(socrata_user) || !nzchar(socrata_password),
+    "Write tests require SOCRATA_USER + SOCRATA_SECRET."
+  )
+}
+
+# ── write_socrata ─────────────────────────────────────────────────────────────
+
+test_that("write_socrata: UPSERT returns 200 and summary data frame", {
+  skip_write()
+  df  <- data.frame(x = sample(-1000:1000, 1L), y = sample(-1000:1000, 1L))
+  res <- write_socrata(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token
+  )
+  expect_type(res, "list")
+  expect_length(res, 1L)  # one chunk
 })
 
-test_that("Date is not entirely NA if the first record is bad (issue 68)", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 68
-  # df <- read.socrata('https://data.cityofchicago.org/resource/me59-5fac.csv')
-  # expect_false(object = all(is.na(df$Creation.Date)),
-  #              "Testing issue 68 https://github.com/Chicago/RSocrata/issues/68")
-  
-  df <- read.socrata("https://data.cityofchicago.org/resource/4h87-zdcp.csv")
-  expect_false(object = all(is.na(df$date_received)),
-               "Testing issue 68 https://github.com/Chicago/RSocrata/issues/68")
-  
-  
-  ## Define smaller tests
-  dates_clean <- posixify(c("01/01/2011", "01/01/2011", "01/01/2011"))
-  dates_mixed <- posixify(c("Date", "01/01/2011", "01/01/2011"))
-  
-  ## Execute smaller tests
-  expect_true(all(!is.na(dates_clean)))  ## Nothing should be NA
-  expect_true(any(is.na(dates_mixed)))   ## Some should be NA
-  expect_true(any(!is.na(dates_mixed)))  ## Some should not be NA
-  expect_warning(posixify(c("Date", "junk", "junk"))) ## Should return warning
+test_that("write_socrata: UPSERT round-trip — values read back correctly", {
+  skip_write()
+  x <- sample(-1000:1000, 1L)
+  y <- sample(-1000:1000, 1L)
+  df <- data.frame(x = x, y = y)
+
+  write_socrata(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token
+  )
+
+  Sys.sleep(2L)  # allow Socrata to index the write before reading back
+
+  result <- socrata_read(
+    WRITE_UPSERT_URL,
+    soql = sprintf("SELECT x, y WHERE x = '%d' AND y = '%d'", x, y)
+  )
+
+  expect_gt(nrow(result), 0L)
+  expect_equal(as.integer(result$x[[1L]]), x)
+  expect_equal(as.integer(result$y[[1L]]), y)
 })
 
-context("change money to numeric")
+test_that("write_socrata: REPLACE overwrites dataset with new rows", {
+  skip_write()
+  x <- sample(-1000:1000, 5L)
+  y <- sample(-1000:1000, 5L)
+  df <- data.frame(x = x, y = y)
 
-test_that("Fields with currency symbols remove the symbol and convert to money", {
-  deniro <- "$15325.65"
-  deniro <- no_deniro(deniro)
-  expect_equal(15325.65, deniro, label="dollars")
-  expect_equal("numeric", class(deniro), label="output of money fields")
+  write_socrata(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_REPLACE,
+    update_mode  = "REPLACE",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token
+  )
+
+  Sys.sleep(2L)
+
+  result <- socrata_read(WRITE_REPLACE_URL)
+
+  # REPLACE should leave exactly the rows we sent
+  expect_equal(nrow(result), nrow(df))
 })
 
-test_that("converts money fields to numeric from Socrata", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata("https://data.cityofchicago.org/Administration-Finance/Current-Employee-Names-Salaries-and-Position-Title/xzkq-xp2w")
-  expect_equal("numeric", class(df$annual_salary), label="dollars")
-  expect_equal("numeric", class(df$annual_salary), label="output of money fields")
+test_that("write_socrata: chunked UPSERT sends all rows", {
+  skip_write()
+  n  <- 25L
+  df <- data.frame(x = sample(-1000:1000, n), y = sample(-1000:1000, n))
+
+  res <- write_socrata(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token,
+    chunk_size   = 10L   # forces 3 chunks
+  )
+
+  # Three chunks sent, three response objects returned
+  expect_length(res, 3L)
 })
 
-context("read Socrata")
+# ── write_socrata_parallel ────────────────────────────────────────────────────
 
-test_that("read Socrata CSV as default", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv')
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-  expect_equal(c("character", "character", "character", "POSIXct", "numeric", 
-                 "numeric", "integer", "character", "character"), 
-               unname(sapply(sapply(df, class),`[`, 1)), 
-               label="testing column CSV classes with defaults")
+test_that("write_socrata_parallel: UPSERT returns correct structure", {
+  skip_write()
+  df  <- data.frame(x = sample(-1000:1000, 1L), y = sample(-1000:1000, 1L))
+  res <- write_socrata_parallel(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token,
+    chunk_size   = 10L,
+    max_active   = 3L
+  )
+  expect_named(res, c("responses", "failures", "summary"))
+  expect_length(res$failures, 0L)
+  expect_s3_class(res$summary, "data.frame")
 })
 
-test_that("read Socrata CSV from New Backend (NBE) endpoint", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata("https://odn.data.socrata.com/resource/pvug-y23y.csv")
-  expect_equal("data.frame", class(df), label="class", info="https://github.com/Chicago/RSocrata/issues/118")
-  expect_equal(4, ncol(df), label="columns", info="https://github.com/Chicago/RSocrata/issues/118")
-  expect_equal(c("character", "character", "character", "integer"), 
-               unname(sapply(sapply(df, class),`[`, 1)), 
-               label="testing column CSV classes with defaults")
+test_that("write_socrata_parallel: round-trip — values read back correctly", {
+  skip_write()
+  x <- sample(-1000:1000, 1L)
+  y <- sample(-1000:1000, 1L)
+
+  write_socrata_parallel(
+    dataframe    = data.frame(x = x, y = y),
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token
+  )
+
+  Sys.sleep(2L)
+
+  result <- socrata_read(
+    WRITE_UPSERT_URL,
+    soql = sprintf("SELECT x, y WHERE x = '%d' AND y = '%d'", x, y)
+  )
+
+  expect_gt(nrow(result), 0L)
+  expect_equal(as.integer(result$x[[1L]]), x)
+  expect_equal(as.integer(result$y[[1L]]), y)
 })
 
-test_that("Warn instead of fail if X-SODA2-* headers are missing", {
-  
-  skip_on_cran()
-  
-  ## Note: The examples with missing Soda2 headers are missing and need to be replaced
-  ## or the issue should be fixed with Socrata / Tyler.
-  ## See issue 196
-  
-  ## These data sets are identified in #118 as data sets with missing soda 
-  ## headers. The missing header should cause the data set to return character 
-  ## columns instead of columns cast into their appropriate classes.
-  ## RSocrata should also warn the user when the header is missing.
-  # url_csv_missing <- "https://data.healthcare.gov/resource/enx3-h2qp.csv?$limit=1000"
-  # url_json_missing <- "https://data.healthcare.gov/resource/enx3-h2qp.json?$limit=1000"
-  ## These URLs should have soda types in the header
-  url_csv_complete <- "https://odn.data.socrata.com/resource/pvug-y23y.csv"
-  url_json_complete <- "https://odn.data.socrata.com/resource/pvug-y23y.json"
-  
-  msg <- "https://github.com/Chicago/RSocrata/issues/118"
-  
-  ## Check that the soda2 headers are missing
-  # expect_null(RSocrata:::getResponse(url_csv_missing)$headers[['x-soda2-types']], info=msg)
-  # expect_null(RSocrata:::getResponse(url_json_missing)$headers[['x-soda2-types']], info=msg)
-  # 
-  ## Check for warning that the header is missing, which causes the column 
-  ## classes to be returned as character
-  # expect_warning(dfCsv <- read.socrata(url_csv_missing), info=msg)
-  # expect_warning(dfJson <- read.socrata(url_json_missing), info=msg)
-  
-  ## Check that the soda2 headers are present
-  expect_false(is.null(RSocrata:::getResponse(url_csv_complete)$headers[['x-soda2-types']]), info=msg)
-  expect_false(is.null(RSocrata:::getResponse(url_json_complete)$headers[['x-soda2-types']]), info=msg)
-  
-  ## Check that they return results without warning
-  expect_silent(df <- read.socrata(url_csv_complete))
-  expect_silent(df <- read.socrata(url_json_complete))
-  
+test_that("write_socrata_parallel: multi-chunk UPSERT has no failures", {
+  skip_write()
+  n  <- 25L
+  df <- data.frame(x = sample(-1000:1000, n), y = sample(-1000:1000, n))
+
+  res <- write_socrata_parallel(
+    dataframe    = df,
+    domain       = WRITE_DOMAIN,
+    dataset_id   = WRITE_ID_UPSERT,
+    update_mode  = "UPSERT",
+    socrata_user = socrata_user,
+    password     = socrata_password,
+    app_token    = app_token,
+    chunk_size   = 10L,
+    max_active   = 3L
+  )
+
+  expect_length(res$failures, 0L)
+  expect_equal(length(res$responses), ceiling(n / 10L))
+  expect_equal(res$summary$Rows_Created + res$summary$Rows_Updated, n)
 })
 
-test_that("read Socrata CSV as character", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv',
-                     stringsAsFactors = FALSE)
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-  expect_equal(c("character", "character", "character", "POSIXct", "numeric", 
-                 "numeric", "integer", "character", "character"), 
-               unname(sapply(sapply(df, class),`[`, 1)))
+test_that("write_socrata_parallel: REPLACE falls back and completes", {
+  skip_write()
+  df <- data.frame(x = sample(-1000:1000, 5L), y = sample(-1000:1000, 5L))
+
+  expect_message(
+    write_socrata_parallel(
+      dataframe    = df,
+      domain       = WRITE_DOMAIN,
+      dataset_id   = WRITE_ID_REPLACE,
+      update_mode  = "REPLACE",
+      socrata_user = socrata_user,
+      password     = socrata_password,
+      app_token    = app_token
+    ),
+    "falling back to write_socrata"
+  )
+
+  Sys.sleep(2L)
+  result <- socrata_read(WRITE_REPLACE_URL)
+  expect_equal(nrow(result), nrow(df))
 })
-
-test_that("read Socrata CSV as factor", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv',
-                     stringsAsFactors = TRUE)
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-  expect_equal(c("factor", "factor", "factor", "POSIXct", "numeric", 
-                 "numeric", "integer", "factor", "factor"), 
-               unname(sapply(sapply(df, class),`[`, 1)))
-})
-
-
-test_that("read Socrata JSON as default", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.json')
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(10, ncol(df), label="columns")
-  expect_equal(c("character", "character", "character", "POSIXct", "character", 
-                 "character", "character", "character", "character", 
-                 "character"), 
-               unname(sapply(sapply(df, class),`[`, 1)))
-})
-
-test_that("read Socrata JSON as character", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.json',
-                     stringsAsFactors = FALSE)
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(10, ncol(df), label="columns")
-  expect_equal(c("character", "character", "character", "POSIXct", "character", 
-                 "character", "character", "character", "character",  
-                 "character"), 
-               unname(sapply(sapply(df, class),`[`, 1)))
-})
-
-test_that("read Socrata JSON as factor", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.json',
-                     stringsAsFactors = TRUE)
-  expect_equal("data.frame", class(df), label="class")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(10, ncol(df), label="columns")
-  expect_equal(c("factor", "factor", "factor", "POSIXct", "factor", "factor", 
-                 "factor", "factor", "factor", "factor"), 
-               unname(sapply(sapply(df, class),`[`, 1)))
-})
-
-
-test_that("read Socrata No Scheme", {
-
-  skip_on_cran()
-  
-  expect_error(read.socrata('soda.demo.socrata.com/resource/4334-bgaj.csv'))
-})
-
-test_that("readSoQL", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv?$select=region')
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(1, ncol(df), label="columns")
-})
-
-
-test_that("readSocrataHumanReadable", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj')
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-})
-
-test_that("Read URL provided by data.json from ls.socrata() - CSV", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/api/views/4334-bgaj/rows.csv?accessType=DOWNLOAD')
-  expect_equal(1007, nrow(df), label="rows", info="Testing for issue #124")
-  expect_equal(9, ncol(df), label="columns")
-})
-
-test_that("Read URL provided by data.json from ls.socrata() - JSON", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/api/views/4334-bgaj/rows.json?accessType=DOWNLOAD')
-  expect_equal(1007, nrow(df), label="rows", info="Testing for issue #124")
-  expect_equal(9, ncol(df), label="columns")
-})
-
-# This test is commented out because of issue #137 as a temporary work-around. 
-# Test should be re-enabled in the future with a work-around.
-# 
-# test_that("Read data with missing dates", { # See issue #24 & #27 
-#   # Query below will pull Boston's 311 requests from early July 2011. Contains NA dates.
-#   df <- read.socrata("https://data.cityofboston.gov/resource/awu8-dc52.csv?$where=case_enquiry_id< 101000295717")
-#   expect_equal(99, nrow(df), label="rows")
-#   na_time_rows <- df[is.na(df$TARGET_DT), ]
-#   expect_equal(33, length(na_time_rows), label="rows with missing TARGET_DT dates")
-# })
-
-test_that("format is not supported", {
-  
-  skip_on_cran()
-  
-  # Unsupported data formats
-  expect_error(read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.xml'))
-})
-
-test_that("read Socrata JSON with missing fields (issue 19 - bind within page)", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 19
-  expect_error(df <- read.socrata("https://data.cityofchicago.org/resource/kn9c-c2s2.json"), NA,
-               info = "https://github.com/Chicago/RSocrata/issues/19")
-  expect_equal(78, nrow(df), label="rows", info = "https://github.com/Chicago/RSocrata/issues/19")
-  expect_equal(9, ncol(df), label="columns", info = "https://github.com/Chicago/RSocrata/issues/19")
-})
-
-test_that("read Socrata JSON with missing fields (issue 19 - binding pages together)", {
-  skip('See Issue #205')
-  ## Define and test issue 19
-  df <- read.socrata(paste0("https://data.smgov.net/resource/ia9m-wspt.json?",
-                            "$where=incident_date>='2011-01-01'%20AND%20incident_date<'2011-01-15'"))
-  expect_error(df, NA, info = "https://github.com/Chicago/RSocrata/issues/19")
-  expect_equal(3719, nrow(df), label="rows", info = "https://github.com/Chicago/RSocrata/issues/19")
-  expect_equal(15, ncol(df), label="columns", info = "https://github.com/Chicago/RSocrata/issues/19")
-})
-
-test_that("Accept a URL with a $limit= clause and properly limit the results", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 83
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.json?$LIMIT=500") # uppercase
-  expect_equal(500, nrow(df), label="rows", 
-               info = "$LIMIT in uppercase https://github.com/Chicago/RSocrata/issues/83")
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.json?$limit=500") # lowercase
-  expect_equal(500, nrow(df), label="rows", 
-               info = "$limit in lowercase https://github.com/Chicago/RSocrata/issues/83")
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.json?$LIMIT=1001&$order=:id") # uppercase
-  expect_equal(1001, nrow(df), label="rows", 
-               info = "$LIMIT in uppercase with 2 queries https://github.com/Chicago/RSocrata/issues/83")
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.json?$limit=1001&$order=:id") # lowercase
-  expect_equal(1001, nrow(df), label="rows lowercase", 
-               info = "$LIMIT in lowercase with 2 queries https://github.com/Chicago/RSocrata/issues/83")
-})
-  
-test_that("If URL has no queries, insert $order:id into URL", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 15
-  ## Ensure that the $order=:id is inserted when no other query parameters are used.
-  df <- read.socrata("https://data.cityofchicago.org/resource/kn9c-c2s2.json")
-  expect_equal("21.5", df$percent_aged_under_18_or_over_64[7], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("38", df$percent_aged_under_18_or_over_64[23], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("40.4", df$percent_aged_under_18_or_over_64[36], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("36.1", df$percent_aged_under_18_or_over_64[42], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  
-})
-
-test_that("If URL has an $order clause, do not insert ?$order:id into URL", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 15
-  ## Ensure that $order=:id is not used when other $order parameters are requested by the user.
-  df <- read.socrata("https://data.cityofchicago.org/resource/kn9c-c2s2.json?$order=hardship_index")
-  expect_equal("35.3", df$percent_aged_under_18_or_over_64[7], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("37.6", df$percent_aged_under_18_or_over_64[23], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("38.5", df$percent_aged_under_18_or_over_64[36], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("32", df$percent_aged_under_18_or_over_64[42], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-})
-
-test_that("If URL has only non-order query parameters, insert $order:id into URL", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 15
-  ## Ensure that $order=:id is inserted when other (non-$order) arguments are used.
-  df <- read.socrata("https://data.cityofchicago.org/resource/kn9c-c2s2.json?$limit=50")
-  expect_equal("21.5", df$percent_aged_under_18_or_over_64[7], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("38", df$percent_aged_under_18_or_over_64[23], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("40.4", df$percent_aged_under_18_or_over_64[36], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("36.1", df$percent_aged_under_18_or_over_64[42], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  df <- read.socrata("https://data.cityofchicago.org/resource/kn9c-c2s2.json?$where=hardship_index>20")
-  expect_equal("34", df$percent_aged_under_18_or_over_64[7], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("30.7", df$percent_aged_under_18_or_over_64[23], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("41.2", df$percent_aged_under_18_or_over_64[36], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")
-  expect_equal("42.9", df$percent_aged_under_18_or_over_64[42], 
-               info = "https://github.com/Chicago/RSocrata/issues/15")  
-})
-
-test_that("Handle URL with query that does not return :id", {
-  
-  skip_on_cran()
-  
-  ## Define and test issue 120
-  ## Ensure that the $order=:id is inserted when no other query parameters are used.
-  qurl <-  "https://data.cityofchicago.org/resource/wrvz-psew.csv?$select=count(trip_id)&$where=trip_start_timestamp between '2016-04-01T00:00:00' and '2016-04-05T00:00:00'"
-  dat <- read.socrata(qurl)
-  expect_equal(1, ncol(dat), 
-               info = "https://github.com/Chicago/RSocrata/issues/120")
-})
-
-
-context("Checks the validity of 4x4")
-
-test_that("is 4x4", {
-  expect_true(isFourByFour("4334-bgaj"), label="ok")
-  expect_false(isFourByFour("4334c-bgajc"), label="11 characters instead of 9")
-  expect_false(isFourByFour("433-bga"), label="7 characters instead of 9")
-  expect_false(isFourByFour("433-bgaj"), label="3 characters before dash instead of 4")
-  expect_false(isFourByFour("4334-!gaj"), label="non-alphanumeric character")
-})
-
-
-test_that("is 4x4 URL", {
-  
-  skip_on_cran()
-  
-  expect_error(read.socrata("https://soda.demo.socrata.com/api/views/4334c-bgajc"), "4334c-bgajc is not a valid Socrata dataset unique identifier", label="11 characters instead of 9")
-  expect_error(read.socrata("https://soda.demo.socrata.com/api/views/433-bga"), "433-bga is not a valid Socrata dataset unique identifier", label="7 characters instead of 9")
-  expect_error(read.socrata("https://soda.demo.socrata.com/api/views/433-bgaj"), "433-bgaj is not a valid Socrata dataset unique identifier", label="3 characters before dash instead of 4")
-  expect_error(read.socrata("https://soda.demo.socrata.com/api/views/4334-!gaj"), "4334-!gaj is not a valid Socrata dataset unique identifier", label="non-alphanumeric character")
-})
-
-test_that("Invalid URL", {
-  
-  ## This one could probably run on CRAN, but being cautious
-  skip_on_cran()
-  
-  expect_error(read.socrata("a.fake.url.being.tested"), "a.fake.url.being.tested does not appear to be a valid URL", label="invalid url")
-})
-
-context("Test Socrata with Token")
-
-test_that("CSV with Token", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv', app_token="ew2rEMuESuzWPqMkyPfOSGJgE")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")  
-})
-
-
-test_that("readSocrataHumanReadableToken", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj', app_token="ew2rEMuESuzWPqMkyPfOSGJgE")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")  
-})
-
-test_that("API Conflict", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/resource/4334-bgaj.csv?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE', app_token="ew2rEMuESuzWPqMkyPfOSUSER")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-  # Check that function is calling the API token specified in url
-  expect_true(substr(validateUrl('https://soda.demo.socrata.com/resource/4334-bgaj.csv?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE', app_token="ew2rEMuESuzWPqMkyPfOSUSER"), 70, 94)=="ew2rEMuESuzWPqMkyPfOSGJgE")
-})
-
-test_that("readAPIConflictHumanReadable", {
-  
-  skip_on_cran()
-  
-  df <- read.socrata('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE', app_token="ew2rEMuESuzWPqMkyPfOSUSER")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns")
-  # Check that function is calling the API token specified in url
-  expect_true(substr(validateUrl('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE', app_token="ew2rEMuESuzWPqMkyPfOSUSER"), 70, 94)=="ew2rEMuESuzWPqMkyPfOSGJgE")
-})
-
-test_that("incorrect API Query", {
-  
-  skip_on_cran()
-  
-  # The query below is missing a $ before app_token.
-  expect_error(read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.csv?$app_token=ew2rEMuESuzWPqMkyPfOSGJgE"))
-  # Check that it was only because of missing $  
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.csv?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns") 
-})
-
-test_that("Ensure filtering and app tokens can coexist - API", {
-  
-  skip_on_cran()
-  
-  # Test includes filter and app_token as an R optional argument
-  df <- read.socrata("https://soda.demo.socrata.com/resource/4334-bgaj.csv?$where=magnitude > 3.0", app_token="ew2rEMuESuzWPqMkyPfOSGJgE")
-  expect_equal(193, nrow(df), label = "rows", info = "https://github.com/Chicago/RSocrata/issues/105")
-})
-
-test_that("incorrect API Query Human Readable", {
-  
-  skip_on_cran()
-  
-  # The query below is missing a $ before app_token.
-  expect_error(read.socrata("https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj?$app_token=ew2rEMuESuzWPqMkyPfOSGJgE"))
-  # Check that it was only because of missing $  
-  df <- read.socrata("https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj?$$app_token=ew2rEMuESuzWPqMkyPfOSGJgE")
-  expect_equal(1007, nrow(df), label="rows")
-  expect_equal(9, ncol(df), label="columns") 
-})
-
-context("URL suffixes from Socrata are handled")
-
-test_that("Handle /data suffix", {
-  
-  skip_on_cran()
-  
-  df1 <- read.socrata('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj/data')
-  expect_equal(1007, nrow(df1), label="rows")
-  expect_equal(9, ncol(df1), label="columns")
-  df2 <- read.socrata('https://soda.demo.socrata.com/dataset/USGS-Earthquake-Reports/4334-bgaj/data/')
-  expect_equal(1007, nrow(df2), label="rows")
-  expect_equal(9, ncol(df2), label="columns")
-})
-
-context("ls.socrata functions correctly")
-
-test_that("List datasets available from a Socrata domain", {
-  
-  skip_on_cran()
-  
-  # Makes some potentially erroneous assumptions about availability
-  # of soda.demo.socrata.com
-  df <- ls.socrata("https://soda.demo.socrata.com")
-  expect_equal(TRUE, nrow(df) > 0)
-  # Test comparing columns against data.json specifications:
-  # https://project-open-data.cio.gov/v1.1/schema/
-  core_names <- as.character(c("issued", "modified", "keyword", "@type", "landingPage", "theme", 
-                               "title", "accessLevel", "distribution", "description", 
-                               "identifier", "publisher", "contactPoint", "license"))
-  expect_equal(as.logical(rep(TRUE, length(core_names))), core_names %in% names(df))
-  # Check that all names in data.json are accounted for in ls.socrata return
-  expect_equal(as.logical(rep(TRUE, length(names(df)))), names(df) %in% c(core_names))
-})
-
-test_that("Catalog Fields are assigned as attributes when listing data sets", {
-  
-  skip_on_cran()
-  
-  df <- ls.socrata("https://soda.demo.socrata.com")
-  catalog_fields <- c("@context", "@id", "@type", "conformsTo", "describedBy")
-  expect_equal(as.logical(rep(TRUE, length(catalog_fields))), catalog_fields %in% names(attributes(df)))
-})
-
-context("getContentAsDataFrame")
-
-test_that("getContentAsDataFrame does not get caught in infinite loop", {
-  skip('See Issue #205')
-  
-  ## This is the original url suggested, but it causes the rbind issue
-  # u <- paste0("https://data.smgov.net/resource/xx64-wi4x.json?$",
-  #             "select=incident_number,incident_date,call_type,received_time,",
-  #             "cleared_time,census_tract_2010_geoid",
-  #             "&$where=incident_date=%272016-08-21%27")
-  
-  ## This request has been modified to avoid the rbind issue
-  u <- paste0("https://data.smgov.net/resource/xx64-wi4x.json?$",
-              "select=incident_number,incident_date,call_type,received_time,",
-              "cleared_time,census_tract_2010_geoid",
-              "&$where=incident_date=%272016-08-27%27%20and%20",
-              "census_tract_2010_geoid%20is%20not%20null")
-  df <- read.socrata(u)
-  expect_equal("data.frame", class(df), label="class")
-})
-

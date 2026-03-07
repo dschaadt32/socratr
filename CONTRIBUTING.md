@@ -1,31 +1,33 @@
+# Contributing to socratr
 
-# How to contribute
-
-We really appreciate when users [fix bugs](https://github.com/Chicago/RSocrata/pull/25) or [provide new features](https://github.com/Chicago/RSocrata/pull/21). When submitting changes, please read below to help the development team keep on top of issues and changes.
+Bug fixes and new features are welcome. Please read the following before submitting.
 
 ## Submitting a bug
 
-If you notice something strange, please [submit an issue on GitHub](https://github.com/Chicago/RSocrata/issues). In the issue, please try to achieve the following:
+[Open an issue on GitHub](https://github.com/your-org/socratr/issues) and include:
 
-* Describe what you did
-* Describe what happened when you did it
-* Describe what you think should happen
-* If possible, describe where you think the error is occuring
+* What you did
+* What happened
+* What you expected to happen
+* Where you think the error is occurring, if known
 
-If you have multiple issues, please submit multiple requests. Once you submit your report, we'll often engage in a conversation or give it a label to be fixed.
+One issue per report, please. We'll respond with a label or follow-up questions.
 
-## Making Changes
+## Making changes
 
-When you want to make a change, either to fix a bug or introduce a new feature, please follow the instructions below
+* Branch off `dev` (not `main`) for all bug fixes and features.
+* Make commits of logical units with clear messages.
+* Add `testthat` tests for any new functionality.
+* Document new functions and any new arguments with roxygen2.
+* Update the version in `DESCRIPTION` following [semantic versioning](https://semver.org/spec/v2.0.0.html) (`x.y.z`).
+* Update `NEWS.md` with a brief description of your change under the appropriate version heading.
+* Update `DESCRIPTION` if your change adds or removes a package dependency, or raises the minimum R version required.
+* Run the full test suite with `devtools::test()` before opening a pull request.
+* Open a pull request against the `dev` branch with a clear description of what changed and why, or a reference to the relevant issue.
 
-* Create a branch or fork of the project based off of the `dev` branch.
-* Make commits of logical units.
-* Add unit tests for any new features.
-* Document any new functions or new arguments within any existing function.
-* Iterate either version or build number in the `DESCRIPTION` file:
-  * The version number follows the `x.y.z-build` format and increments based on [semantic versioning 2.0.0](https://semver.org/spec/v2.0.0.html). Please update versions corresponding to those guidelines.
-  * If your contribution takes several commits, please increment the build number (e.g., x.y.z-build) so there is a unique relationship of the version-build number to each commit.
-* Update the DESCRIPTION file for any new dependencies on packages or minimum verson of R required (up to the current release of R).
-* Run all tests in `tests/testthat/`.
-* Create a pull request with a robust description or [reference the issue number](https://github.com/Chicago/RSocrata/issues) to the `dev` branch (read the package's [formal git-flow policy](https://github.com/Chicago/RSocrata/wiki/Git-Flow)).
+## Code style
 
+* Use `httr2` for all HTTP — do not introduce `httr` or `curl` directly.
+* Prefer `data.table` for in-memory aggregation of large page results.
+* Keep internal helpers in the `# ── Internal helpers ──` section and mark them `#' @noRd`.
+* Sequential functions (`read_socrata`, `write_socrata`) delegate to their parallel counterparts with `max_active = 1` — keep that pattern consistent.

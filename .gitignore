@@ -13,3 +13,6 @@
 *.Rproj.user
 *.Rhistory
 .Rproj.user
+
+/.quarto/
+**/*.quarto_ipynb

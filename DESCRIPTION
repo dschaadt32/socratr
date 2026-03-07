@@ -9,7 +9,8 @@ Description: Provides easier interaction with
     returns an R data frame. Converts dates to 'POSIX'
     format and manages throttling by 'Socrata'.
     Users can upload data to 'Socrata' portals directly
-    from R.
+    from R. Inspired by the RSocrata package 
+    <https://github.com/Chicago/RSocrata> by the City of Chicago.
 Version: 1.7.16-1
 Date: 2025-04-15
 Author: Hugh Devlin, Ph. D., Tom Schenk, Jr., Gene Leynes, Nick Lucius, John Malc, Mark Silverberg, and Peter Schmeideskamp

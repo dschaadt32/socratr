@@ -1074,7 +1074,29 @@ read_socrata_parallel <- function(
     error = function(e) NA_integer_
   )
 
-  # ── Fallback: batched parallel (no row count needed) ──────────────────────
+  # Metadata failed or returned NA — try COUNT(*) via SoQL
+  if (is.na(total_rows_api) || total_rows_api <= 0L) {
+    if (verbose) {
+      message("Metadata unavailable. Trying COUNT(*) query ...")
+    }
+    total_rows_api <- tryCatch(
+      {
+        count_resp <- httr2::req_perform(
+          req_base |>
+            httr2::req_body_json(list(
+              query = "SELECT COUNT(*)",
+              page = list(pageNumber = 1L, pageSize = 1L),
+              includeSynthetic = FALSE
+            ))
+        )
+        parsed <- yyjsonr::read_json_raw(httr2::resp_body_raw(count_resp))
+        as.integer(parsed[[1]][[1]])
+      },
+      error = function(e) NA_integer_
+    )
+  }
+
+  # Both failed — fall back to batched parallel
   if (is.na(total_rows_api) || total_rows_api <= 0L) {
     if (verbose) {
       message("Row count unavailable. Using batched parallel fetch ...")

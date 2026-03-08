@@ -86,7 +86,7 @@ is_four_by_four <- function(x) {
 #' posixify("2024-06-15T13:45:00.000")
 #' posixify("06/15/2024 01:45:00 PM")
 #' @export
-posixify <- function(x) {
+posixify <- function(x, verbose = FALSE) {
   if (is.null(x) || length(x) == 0L) {
     return(as.POSIXct(character(0L)))
   }
@@ -100,7 +100,7 @@ posixify <- function(x) {
   )
 
   n_bad <- sum(is.na(dt) & !is.na(x))
-  if (n_bad > 0L) {
+  if (n_bad > 0L & verbose) {
     warning(
       n_bad,
       " value(s) could not be parsed as dates and were set to NA.",
@@ -594,7 +594,7 @@ ls_socrata <- function(
   })
 
   df <- data.table::rbindlist(resources, fill = TRUE)
-  df[, updated := posixify(updated)]
+  df[, updated := posixify(updated, verbose)]
 
   tibble::as_tibble(df)
 }
@@ -732,7 +732,10 @@ get_metadata <- function(
       }
     },
     ,
-    updated = posixify(as.character(raw$rowsUpdatedAt %||% NA_character_)),
+    updated = posixify(
+      as.character(raw$rowsUpdatedAt %||% NA_character_),
+      verbose
+    ),
     columns = columns_tbl
   )
 }

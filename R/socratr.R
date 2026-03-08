@@ -185,164 +185,151 @@ read_socrata <- function(
   max_rows = Inf,
   verbose = FALSE
 ) {
-  return(read_socrata_parallel(
-    url = url,
-    domain = domain,
-    soql = soql,
-    app_token = app_token,
-    socrata_user = socrata_user,
-    password = password,
-    page_size = page_size,
-    max_rows = max_rows,
-    max_active = 1, ## sequential is just having one active thread
-    verbose = verbose
-  ))
-
-  # # ── Validate ─────
-  # if (missing(url) || !nzchar(trimws(url))) {
-  #   stop("`url` must be a non-empty string.", call. = FALSE)
-  # }
-  # # page_size <- as.integer(page_size)
-  # # if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
-  # #   stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
-  # # }
-
-  # ds <- resolve_dataset(url, domain)
-  # endpoint <- paste0(
-  #   "https://",
-  #   ds$hostname,
-  #   "/api/v3/views/",
-  #   ds$four_by_four,
-  #   "/query.json"
-  # )
-
-  # # ── Build base request ─────────────────────────────────────────────────────
-  # # Auth headers are set once and reused for every page request.
-  # req_base <- httr2::request(endpoint) |>
-  #   httr2::req_user_agent(socratr_ua()) |>
-  #   httr2::req_headers(
-  #     "Accept" = "application/json",
-  #     "Content-Type" = "application/json"
-  #   ) |>
-  #   httr2::req_retry(max_tries = 3L, backoff = ~ 2^.x)
-
-  # if (!is.null(app_token)) {
-  #   req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
-  # }
-  # if (!is.null(socrata_user) && !is.null(password)) {
-  #   req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
+  # ── Validate ─────
+  if (missing(url) || !nzchar(trimws(url))) {
+    stop("`url` must be a non-empty string.", call. = FALSE)
+  }
+  # page_size <- as.integer(page_size)
+  # if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
+  #   stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
   # }
 
-  # # ── Paginate ───────────────────────────────────────────────────────────────
-  # # SODA 3 has no server-side cursor. Page numbers are managed here so callers
-  # # never see them. We stop when a page returns fewer rows than page_size,
-  # # which is the documented signal that there is no more data.
+  ds <- resolve_dataset(url, domain)
+  endpoint <- paste0(
+    "https://",
+    ds$hostname,
+    "/api/v3/views/",
+    ds$four_by_four,
+    "/query.json"
+  )
 
-  # all_pages <- vector("list", 64L) # pre-allocated; trimmed before rbindlist
-  # page_num <- 1L # page number sent to the API
-  # page_index <- 0L # insertion index into all_pages
-  # total_rows <- 0L
+  # ── Build base request ─────────────────────────────────────────────────────
+  # Auth headers are set once and reused for every page request.
+  req_base <- httr2::request(endpoint) |>
+    httr2::req_user_agent(socratr_ua()) |>
+    httr2::req_headers(
+      "Accept" = "application/json",
+      "Content-Type" = "application/json"
+    ) |>
+    httr2::req_retry(max_tries = 3L, backoff = ~ 2^.x)
 
-  # repeat {
-  #   rows_remaining <- max_rows - total_rows
-  #   if (rows_remaining <= 0L) {
-  #     break
-  #   }
+  if (!is.null(app_token)) {
+    req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
+  }
+  if (!is.null(socrata_user) && !is.null(password)) {
+    req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
+  }
 
-  #   # Guard: min(integer, Inf) returns a double in R. Serialising a double Inf
-  #   # to JSON produces null, which causes SODA 3 to use its own default page
-  #   # size (often smaller than requested), making the short-page stop condition
-  #   # fire too early and truncating the result.
-  #   this_page_size <- if (is.finite(rows_remaining)) {
-  #     as.integer(min(page_size, rows_remaining))
-  #   } else {
-  #     page_size # already a validated integer
-  #   }
+  # ── Paginate ───────────────────────────────────────────────────────────────
+  # SODA 3 has no server-side cursor. Page numbers are managed here so callers
+  # never see them. We stop when a page returns fewer rows than page_size,
+  # which is the documented signal that there is no more data.
 
-  #   if (verbose) {
-  #     message(sprintf(
-  #       "Fetching page %d (up to %d rows) ...",
-  #       page_num,
-  #       this_page_size
-  #     ))
-  #   }
+  all_pages <- vector("list", 64L) # pre-allocated; trimmed before rbindlist
+  page_num <- 1L # page number sent to the API
+  page_index <- 0L # insertion index into all_pages
+  total_rows <- 0L
 
-  #   body <- list(
-  #     query = soql,
-  #     page = list(pageNumber = page_num, pageSize = this_page_size),
-  #     includeSynthetic = FALSE
-  #   )
+  repeat {
+    rows_remaining <- max_rows - total_rows
+    if (rows_remaining <= 0L) {
+      break
+    }
 
-  #   resp <- tryCatch(
-  #     httr2::req_perform(req_base |> httr2::req_body_json(body)),
-  #     error = function(e) {
-  #       api_msg <- if (!is.null(e$resp)) {
-  #         err <- tryCatch(
-  #           yyjsonr::read_json_raw(httr2::resp_body_raw(e$resp)),
-  #           error = function(...) list()
-  #         )
-  #         err$message %||% paste("HTTP", httr2::resp_status(e$resp))
-  #       } else {
-  #         conditionMessage(e)
-  #       }
-  #       stop(
-  #         sprintf("Request failed on page %d: %s", page_num, api_msg),
-  #         call. = FALSE
-  #       )
-  #     }
-  #   )
+    # Guard: min(integer, Inf) returns a double in R. Serialising a double Inf
+    # to JSON produces null, which causes SODA 3 to use its own default page
+    # size (often smaller than requested), making the short-page stop condition
+    # fire too early and truncating the result.
+    this_page_size <- if (is.finite(rows_remaining)) {
+      as.integer(min(page_size, rows_remaining))
+    } else {
+      page_size # already a validated integer
+    }
 
-  #   parsed <- tryCatch(
-  #     yyjsonr::read_json_raw(httr2::resp_body_raw(resp)),
-  #     error = function(e) {
-  #       stop(
-  #         "Failed to parse JSON on page ",
-  #         page_num,
-  #         ": ",
-  #         conditionMessage(e),
-  #         call. = FALSE
-  #       )
-  #     }
-  #   )
+    if (verbose) {
+      message(sprintf(
+        "Fetching page %d (up to %d rows) ...",
+        page_num,
+        this_page_size
+      ))
+    }
 
-  #   n_rows <- nrow(parsed)
-  #   if (n_rows == 0L) {
-  #     break
-  #   }
+    body <- list(
+      query = soql,
+      page = list(pageNumber = page_num, pageSize = this_page_size),
+      includeSynthetic = FALSE
+    )
 
-  #   batch_dt <- data.table::as.data.table(parsed)
+    resp <- tryCatch(
+      httr2::req_perform(req_base |> httr2::req_body_json(body)),
+      error = function(e) {
+        api_msg <- if (!is.null(e$resp)) {
+          err <- tryCatch(
+            yyjsonr::read_json_raw(httr2::resp_body_raw(e$resp)),
+            error = function(...) list()
+          )
+          err$message %||% paste("HTTP", httr2::resp_status(e$resp))
+        } else {
+          conditionMessage(e)
+        }
+        stop(
+          sprintf("Request failed on page %d: %s", page_num, api_msg),
+          call. = FALSE
+        )
+      }
+    )
 
-  #   # Convert only list-typed columns (nested JSON) to character.
-  #   # Leave atomic columns alone so the caller can coerce types as needed.
-  #   list_cols <- names(batch_dt)[vapply(batch_dt, is.list, logical(1L))]
-  #   if (length(list_cols) > 0L) {
-  #     batch_dt[, (list_cols) := lapply(.SD, as.character), .SDcols = list_cols]
-  #   }
+    parsed <- tryCatch(
+      yyjsonr::read_json_raw(httr2::resp_body_raw(resp)),
+      error = function(e) {
+        stop(
+          "Failed to parse JSON on page ",
+          page_num,
+          ": ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+      }
+    )
 
-  #   page_index <- page_index + 1L
-  #   all_pages[[page_index]] <- batch_dt
-  #   total_rows <- total_rows + n_rows
+    n_rows <- nrow(parsed)
+    if (n_rows == 0L) {
+      break
+    }
 
-  #   # Short page = last page; stop without making a wasted empty request
-  #   if (n_rows < this_page_size) {
-  #     break
-  #   }
+    batch_dt <- data.table::as.data.table(parsed)
 
-  #   page_num <- page_num + 1L
-  # }
+    # Convert only list-typed columns (nested JSON) to character.
+    # Leave atomic columns alone so the caller can coerce types as needed.
+    list_cols <- names(batch_dt)[vapply(batch_dt, is.list, logical(1L))]
+    if (length(list_cols) > 0L) {
+      batch_dt[, (list_cols) := lapply(.SD, as.character), .SDcols = list_cols]
+    }
 
-  # if (total_rows == 0L) {
-  #   return(tibble::tibble())
-  # }
+    page_index <- page_index + 1L
+    all_pages[[page_index]] <- batch_dt
+    total_rows <- total_rows + n_rows
 
-  # final_dt <- data.table::rbindlist(
-  #   all_pages[seq_len(page_index)],
-  #   fill = TRUE,
-  #   use.names = TRUE
-  # )
-  # names(final_dt) <- janitor::make_clean_names(names(final_dt))
+    # Short page = last page; stop without making a wasted empty request
+    if (n_rows < this_page_size) {
+      break
+    }
 
-  # tibble::as_tibble(final_dt)
+    page_num <- page_num + 1L
+  }
+
+  if (total_rows == 0L) {
+    return(tibble::tibble())
+  }
+
+  final_dt <- data.table::rbindlist(
+    all_pages[seq_len(page_index)],
+    fill = TRUE,
+    use.names = TRUE
+  )
+  names(final_dt) <- janitor::make_clean_names(names(final_dt))
+
+  tibble::as_tibble(final_dt)
 }
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -846,161 +833,12 @@ coerce_socrata_types <- function(df, meta) {
 
 # ── Parallel read ─────────────────────────────────────────────────────────────
 
-#' @noRd
-.read_socrata_parallel_batched <- function(
-  req_base,
-  soql,
-  page_size,
-  max_rows,
-  max_active,
-  verbose
-) {
-  all_pages <- vector("list", 256L)
-  page_index <- 0L
-  total_rows <- 0L
-  page_num <- 1L
-
-  repeat {
-    rows_remaining <- max_rows - total_rows
-
-    if (is.finite(rows_remaining) && rows_remaining <= 0L) {
-      break
-    }
-
-    # ── Build a batch of max_active page requests ──────────────────────────
-    batch_size <- if (is.finite(rows_remaining)) {
-      min(max_active, ceiling(rows_remaining / page_size))
-    } else {
-      max_active
-    }
-
-    batch_reqs <- lapply(seq_len(batch_size), function(i) {
-      p <- page_num + i - 1L
-
-      rows_this_page <- if (is.finite(rows_remaining)) {
-        as.integer(min(page_size, rows_remaining - (i - 1L) * page_size))
-      } else {
-        page_size
-      }
-
-      req_base |>
-        httr2::req_body_json(list(
-          query = soql,
-          page = list(pageNumber = p, pageSize = rows_this_page),
-          includeSynthetic = FALSE
-        ))
-    })
-
-    if (verbose) {
-      message(sprintf(
-        "Fetching pages %d-%d (up to %d rows each) ...",
-        page_num,
-        page_num + batch_size - 1L,
-        page_size
-      ))
-    }
-
-    # ── Fire batch in parallel ─────────────────────────────────────────────
-    resps <- httr2::req_perform_parallel(
-      batch_reqs,
-      on_error = "continue",
-      max_active = max_active,
-      progress = verbose
-    )
-
-    failed <- httr2::resps_failures(resps)
-    if (length(failed) > 0L) {
-      warning(
-        length(failed),
-        " page request(s) in this batch failed and will be ",
-        "missing from results.",
-        call. = FALSE
-      )
-    }
-
-    successful <- httr2::resps_successes(resps)
-
-    # ── Parse batch responses ──────────────────────────────────────────────
-    done <- FALSE
-
-    for (i in seq_along(successful)) {
-      parsed <- tryCatch(
-        yyjsonr::read_json_raw(httr2::resp_body_raw(successful[[i]])),
-        error = function(e) {
-          warning(
-            "Failed to parse page ",
-            page_num + i - 1L,
-            ": ",
-            conditionMessage(e),
-            call. = FALSE
-          )
-          NULL
-        }
-      )
-
-      if (is.null(parsed) || length(parsed) == 0L) {
-        done <- TRUE
-        break
-      }
-
-      n_rows <- nrow(parsed)
-
-      if (n_rows > 0L) {
-        batch_dt <- data.table::as.data.table(parsed)
-        list_cols <- names(batch_dt)[vapply(batch_dt, is.list, logical(1L))]
-        if (length(list_cols) > 0L) {
-          batch_dt[,
-            (list_cols) := lapply(.SD, as.character),
-            .SDcols = list_cols
-          ]
-        }
-
-        page_index <- page_index + 1L
-
-        if (page_index > length(all_pages)) {
-          all_pages <- c(all_pages, vector("list", 256L))
-        }
-
-        all_pages[[page_index]] <- batch_dt
-        total_rows <- total_rows + n_rows
-      }
-
-      # Short page = last page
-      if (n_rows < page_size) {
-        done <- TRUE
-        break
-      }
-    }
-
-    if (done) {
-      break
-    }
-
-    page_num <- page_num + batch_size
-  }
-
-  if (page_index == 0L) {
-    return(tibble::tibble())
-  }
-
-  final_dt <- data.table::rbindlist(
-    all_pages[seq_len(page_index)],
-    fill = TRUE,
-    use.names = TRUE
-  )
-  names(final_dt) <- janitor::make_clean_names(names(final_dt))
-
-  tibble::as_tibble(final_dt)
-}
-
-
 #' Read a Socrata dataset in parallel (faster for large datasets)
 #'
 #' A drop-in replacement for [read_socrata()] that fetches pages concurrently
 #' instead of sequentially. Attempts a metadata preflight to determine the
 #' total row count and pre-build all page requests. If the row count is
-#' unavailable, falls back to a batched parallel strategy that fires
-#' \code{max_active} pages at a time and stops on a short page.
+#' unavailable, falls back to the serial read_socrata strategy.
 #'
 #' @inheritParams read_socrata
 #' @param max_active Integer. Maximum concurrent requests (default 5).
@@ -1062,66 +900,45 @@ read_socrata_parallel <- function(
   # ── Preflight: try metadata for row count ──────────────────────────────────
   total_rows_api <- tryCatch(
     {
-      if (verbose) {
-        message("Running metadata preflight to get row count ...")
-      }
-      meta <- get_metadata(
-        url = url,
-        domain = domain,
-        app_token = app_token,
-        socrata_user = socrata_user,
-        password = password
+      where_clause <- regmatches(
+        soql,
+        regexpr("(?i)WHERE\\s+.+$", soql, perl = TRUE)
       )
-      as.integer(meta$row_count)
+
+      count_query <- if (length(where_clause) > 0L) {
+        paste("SELECT COUNT(*)", where_clause)
+      } else {
+        "SELECT COUNT(*)"
+      }
+
+      count_resp <- httr2::req_perform(
+        req_base |>
+          httr2::req_body_json(list(
+            query = count_query,
+            page = list(pageNumber = 1L, pageSize = 1L),
+            includeSynthetic = FALSE
+          ))
+      )
+      parsed <- yyjsonr::read_json_raw(httr2::resp_body_raw(count_resp))
+      as.integer(parsed[[1]][[1]])
     },
     error = function(e) NA_integer_
   )
 
-  # Metadata failed or returned NA — try COUNT(*) via SoQL
+  # Getting the row count failed — fall back to serial read
   if (is.na(total_rows_api) || total_rows_api <= 0L) {
     if (verbose) {
-      message("Metadata unavailable. Trying COUNT(*) query ...")
+      message("Row count unavailable. Using serial fetch ...")
     }
-
-    total_rows_api <- tryCatch(
-      {
-        where_clause <- regmatches(
-          soql,
-          regexpr("(?i)WHERE\\s+.+$", soql, perl = TRUE)
-        )
-
-        count_query <- if (length(where_clause) > 0L) {
-          paste("SELECT COUNT(*)", where_clause)
-        } else {
-          "SELECT COUNT(*)"
-        }
-
-        count_resp <- httr2::req_perform(
-          req_base |>
-            httr2::req_body_json(list(
-              query = count_query,
-              page = list(pageNumber = 1L, pageSize = 1L),
-              includeSynthetic = FALSE
-            ))
-        )
-        parsed <- yyjsonr::read_json_raw(httr2::resp_body_raw(count_resp))
-        as.integer(parsed[[1]][[1]])
-      },
-      error = function(e) NA_integer_
-    )
-  }
-
-  # Both failed — fall back to batched parallel
-  if (is.na(total_rows_api) || total_rows_api <= 0L) {
-    if (verbose) {
-      message("Row count unavailable. Using batched parallel fetch ...")
-    }
-    return(.read_socrata_parallel_batched(
-      req_base = req_base,
+    return(read_socrata(
+      url = url,
+      domain = domain,
       soql = soql,
+      app_token = app_token,
+      socrata_user = socrata_user,
+      password = password,
       page_size = page_size,
       max_rows = max_rows,
-      max_active = max_active,
       verbose = verbose
     ))
   }

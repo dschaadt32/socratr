@@ -1082,12 +1082,24 @@ read_socrata_parallel <- function(
     if (verbose) {
       message("Metadata unavailable. Trying COUNT(*) query ...")
     }
+
     total_rows_api <- tryCatch(
       {
+        where_clause <- regmatches(
+          soql,
+          regexpr("(?i)WHERE\\s+.+$", soql, perl = TRUE)
+        )
+
+        count_query <- if (length(where_clause) > 0L) {
+          paste("SELECT COUNT(*)", where_clause)
+        } else {
+          "SELECT COUNT(*)"
+        }
+
         count_resp <- httr2::req_perform(
           req_base |>
             httr2::req_body_json(list(
-              query = "SELECT COUNT(*)",
+              query = count_query,
               page = list(pageNumber = 1L, pageSize = 1L),
               includeSynthetic = FALSE
             ))

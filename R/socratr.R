@@ -1207,9 +1207,26 @@ write_socrata_parallel <- function(
       " of ",
       n_chunks,
       " chunk(s) failed. ",
-      "Re-run with write_socrata() for automatic retry.",
       call. = FALSE
     )
+
+    # Print error details
+    for (i in seq_along(failed)) {
+      r <- failed[[i]]
+      cat(sprintf("\n--- Chunk failure %d ---\n", i))
+      cat("Status:", httr2::resp_status(r), "\n")
+      body <- tryCatch(
+        yyjsonr::read_json_raw(httr2::resp_body_raw(r)),
+        error = function(...) NULL
+      )
+      if (!is.null(body)) {
+        cat("Response body:\n")
+        print(body)
+      } else {
+        cat("Raw body:\n")
+        cat(httr2::resp_body_string(r), "\n")
+      }
+    }
   }
 
   cat(sprintf(

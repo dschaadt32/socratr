@@ -1,0 +1,118 @@
+---
+title: "Introduction to socratr"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to socratr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+# socratr
+
+`socratr` reads and writes datasets on [Socrata](https://dev.socrata.com)
+open data portals. It supports SODA 3 JSON and SODA 2 CSV downloads,
+optional schema-based type coercion, and parallel fetches for large
+datasets.
+
+```{r setup}
+library(socratr)
+```
+
+## Reading data
+
+```{r read-json}
+df <- read_socrata(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+```
+
+Use CSV for large public downloads, and `coerce = TRUE` for typed columns:
+
+```{r read-csv}
+df <- read_socrata(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  format = "csv",
+  coerce = TRUE,
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+```
+
+Filter with SoQL (do not include `LIMIT` / `OFFSET` — pagination is
+handled internally):
+
+```{r read-soql}
+df <- read_socrata(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  soql = "SELECT region, magnitude WHERE magnitude > 3",
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+```
+
+## Parallel reads
+
+```{r read-parallel}
+df <- read_socrata_parallel(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  format = "csv",
+  max_active = 5L,
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+```
+
+## Metadata and coercion
+
+```{r metadata}
+meta <- get_metadata(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+meta$columns
+
+df <- read_socrata(
+  "https://soda.demo.socrata.com/resource/4334-bgaj",
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+df <- coerce_socrata_types(df, meta)
+```
+
+## Listing datasets
+
+```{r list}
+ls_socrata("soda.demo.socrata.com", limit = 10L)
+```
+
+## Writing data
+
+Writing uses SODA 2. You need credentials with write access to the target
+dataset.
+
+```{r write}
+write_socrata(
+  dataframe    = data.frame(x = 1, y = 2),
+  domain       = "soda.demo.socrata.com",
+  dataset_id   = "xh6g-yugi",
+  update_mode  = "UPSERT",
+  socrata_user = Sys.getenv("SOCRATA_USER"),
+  password     = Sys.getenv("SOCRATA_PASSWORD"),
+  app_token    = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+```
+
+## Authentication
+
+```{r auth}
+Sys.setenv(
+  SOCRATA_APP_TOKEN  = "your_app_token",
+  SOCRATA_USER       = "your@email.com_or_api_key_id",
+  SOCRATA_PASSWORD   = "your_password_or_api_secret"
+)
+```

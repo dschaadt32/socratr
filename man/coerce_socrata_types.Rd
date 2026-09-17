@@ -7,27 +7,27 @@
 coerce_socrata_types(df, meta)
 }
 \arguments{
-\item{df}{A tibble returned by [read_socrata()].}
+\item{df}{A tibble returned by \code{\link[=read_socrata]{read_socrata()}}.}
 
-\item{meta}{The list returned by [get_metadata()] for the same dataset.
-Must contain a `columns` tibble with `field_name` and `data_type` columns.}
+\item{meta}{The list returned by \code{\link[=get_metadata]{get_metadata()}} for the same dataset.
+Must contain a \code{columns} tibble with \code{field_name} and \code{data_type} columns.}
 }
 \value{
 The same tibble with columns coerced to appropriate types.
 }
 \description{
-After [read_socrata()] returns a tibble with all-character columns, this
+After \code{\link[=read_socrata]{read_socrata()}} returns a tibble with all-character columns, this
 function applies type conversions based on the schema returned by
-[get_metadata()]. Numeric columns become `numeric`, date columns become
-`POSIXct`, and checkbox columns become `logical`. Everything else stays
-`character`.
+\code{\link[=get_metadata]{get_metadata()}}. Numeric columns become \code{numeric}, date columns become
+\code{POSIXct}, and checkbox columns become \code{logical}. Everything else stays
+\code{character}.
 }
 \details{
-Column matching is done on `field_name` after applying
-[janitor::make_clean_names()] to both sides, which mirrors the name
-transformation applied by [read_socrata()]. Columns in `df` that have no
-corresponding entry in `meta$columns` are left as-is. Columns with
-unrecognised `data_type` values are also left as character.
+Column matching is done on \code{field_name} after applying
+\code{\link[janitor:make_clean_names]{janitor::make_clean_names()}} to both sides, which mirrors the name
+transformation applied by \code{\link[=read_socrata]{read_socrata()}}. Columns in \code{df} that have no
+corresponding entry in \code{meta$columns} are left as-is. Columns with
+unrecognised \code{data_type} values are also left as character.
 }
 \examples{
 \dontrun{

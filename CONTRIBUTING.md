@@ -1,33 +1,39 @@
 # Contributing to socratr
 
-Bug fixes and new features are welcome. Please read the following before submitting.
+Bug fixes and new features are welcome.
 
 ## Submitting a bug
 
-[Open an issue on GitHub](https://github.com/your-org/socratr/issues) and include:
+[Open an issue on GitHub](https://github.com/dschaadt/socratr/issues) and include:
 
 * What you did
 * What happened
 * What you expected to happen
-* Where you think the error is occurring, if known
-
-One issue per report, please. We'll respond with a label or follow-up questions.
+* A reproducible example when possible
 
 ## Making changes
 
-* Branch off `dev` (not `main`) for all bug fixes and features.
+* Branch off `main` for bug fixes and features.
 * Make commits of logical units with clear messages.
 * Add `testthat` tests for any new functionality.
-* Document new functions and any new arguments with roxygen2.
-* Update the version in `DESCRIPTION` following [semantic versioning](https://semver.org/spec/v2.0.0.html) (`x.y.z`).
-* Update `NEWS.md` with a brief description of your change under the appropriate version heading.
-* Update `DESCRIPTION` if your change adds or removes a package dependency, or raises the minimum R version required.
-* Run the full test suite with `devtools::test()` before opening a pull request.
-* Open a pull request against the `dev` branch with a clear description of what changed and why, or a reference to the relevant issue.
+* Document new functions and arguments with roxygen2 (`#'` comments in `R/`).
+* Update the version in `DESCRIPTION` following [semantic versioning](https://semver.org/).
+* Update `NEWS.md` under the appropriate version heading.
+* Update `DESCRIPTION` if you add or remove a dependency.
+* Run `devtools::document()`, `devtools::test()`, and preferably
+  `devtools::check()` before opening a pull request.
 
 ## Code style
 
 * Use `httr2` for all HTTP — do not introduce `httr` or `curl` directly.
-* Prefer `data.table` for in-memory aggregation of large page results.
-* Keep internal helpers in the `# ── Internal helpers ──` section and mark them `#' @noRd`.
-* Sequential functions (`read_socrata`, `write_socrata`) delegate to their parallel counterparts with `max_active = 1` — keep that pattern consistent.
+* Prefer `data.table` for aggregating large page results.
+* Keep internal helpers marked with `#' @noRd`.
+* `write_socrata()` is the serial write path with retries;
+  `write_socrata_parallel()` calls into it for `REPLACE` mode.
+* Live API tests should skip when credentials are absent
+  (`SOCRATA_USER` / `SOCRATA_PASSWORD` / `SOCRATA_TOKEN`).
+
+## Local secrets
+
+Never commit credentials. Use environment variables or a gitignored
+`config.R` / `.Renviron` for local work.

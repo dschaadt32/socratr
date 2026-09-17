@@ -8,12 +8,15 @@ posixify(x, verbose = FALSE)
 }
 \arguments{
 \item{x}{Character vector of date/time strings.}
+
+\item{verbose}{Logical. If \code{TRUE}, warn when values fail to parse
+(default \code{FALSE}).}
 }
 \value{
-A `POSIXct` vector in the system timezone.
+A \code{POSIXct} vector in the system timezone.
 }
 \description{
-Handles ISO 8601 (SODA 3) and legacy `mm/dd/yyyy` (SODA 2) formats.
+Handles ISO 8601 (SODA 3) and legacy \code{mm/dd/yyyy} (SODA 2) formats.
 Warns if any non-missing value fails to parse.
 }
 \examples{

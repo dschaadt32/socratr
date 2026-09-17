@@ -10,7 +10,7 @@ is_four_by_four(x)
 \item{x}{Character vector to test.}
 }
 \value{
-Logical vector the same length as `x`.
+Logical vector the same length as \code{x}.
 }
 \description{
 Test whether a string is a valid Socrata 4x4 dataset identifier

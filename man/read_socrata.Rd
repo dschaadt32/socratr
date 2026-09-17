@@ -2,7 +2,7 @@
 % Please edit documentation in R/socratr.R
 \name{read_socrata}
 \alias{read_socrata}
-\title{Read a Socrata dataset via SODA 3}
+\title{Read a Socrata dataset}
 \usage{
 read_socrata(
   url,
@@ -11,25 +11,27 @@ read_socrata(
   app_token = NULL,
   socrata_user = NULL,
   password = NULL,
-  page_size = 5000L,
+  page_size = NULL,
   max_rows = Inf,
+  format = c("json", "csv"),
+  coerce = FALSE,
   verbose = FALSE
 )
 }
 \arguments{
-\item{url}{Character. A full Socrata dataset URL **or** a bare 4x4
-ID (e.g. `"abcd-1234"`). If a bare ID, `domain` is also required.}
+\item{url}{Character. A full Socrata dataset URL \strong{or} a bare 4x4
+ID (e.g. \code{"abcd-1234"}). If a bare ID, \code{domain} is also required.}
 
-\item{domain}{Character. Required only when `url` is a bare 4x4 ID.
-Leading `https://` and trailing paths are stripped automatically.}
+\item{domain}{Character. Required only when \code{url} is a bare 4x4 ID.
+Leading \verb{https://} and trailing paths are stripped automatically.}
 
 \item{soql}{Character. A plain SoQL query string (default
-`"SELECT *"`). Do **not** include `LIMIT` or `OFFSET`; pagination is
+\code{"SELECT *"}). Do \strong{not} include \code{LIMIT} or \code{OFFSET}; pagination is
 handled internally. Example:
-`"SELECT name, value WHERE value > 100 ORDER BY value DESC"`.}
+\code{"SELECT name, value WHERE value > 100 ORDER BY value DESC"}.}
 
 \item{app_token}{Character (optional). Socrata Application Token, sent as
-the `X-App-Token` header. Strongly recommended — raises the anonymous
+the \code{X-App-Token} header. Strongly recommended - raises the anonymous
 rate limit significantly.}
 
 \item{socrata_user}{Character (optional). Socrata account email or API Key
@@ -37,47 +39,55 @@ ID. Required for private datasets.}
 
 \item{password}{Character (optional). Socrata password or API Secret Key.}
 
-\item{page_size}{Integer. Rows fetched per request (default 5 000,
-max 50 000). Reduce if you see timeouts on wide or slow datasets.}
+\item{page_size}{Integer. Rows fetched per request (default 5 000 for
+JSON, 50 000 when \code{format = "csv"}; max 50 000).}
 
-\item{max_rows}{Integer or `Inf` (default). Hard cap on total rows
+\item{max_rows}{Integer or \code{Inf} (default). Hard cap on total rows
 returned. Useful for sampling or testing without pulling a full dataset.}
 
-\item{verbose}{Logical. If `TRUE`, prints a one-line progress message
-per page fetched (default `FALSE`).}
+\item{format}{Character. \code{"json"} (SODA 3, default) or \code{"csv"} (SODA 2).}
+
+\item{coerce}{Logical. If \code{TRUE}, fetch schema metadata and coerce
+columns to native R types (dates -> \code{POSIXct}, numbers -> \code{numeric},
+checkboxes -> \code{logical}), like RSocrata's automatic date conversion.
+Default \code{FALSE} (all columns remain character).}
+
+\item{verbose}{Logical. If \code{TRUE}, prints a one-line progress message
+per page fetched (default \code{FALSE}).}
 }
 \value{
-A [tibble::tibble()] with all columns as character strings.
-  Convert dates with [posixify()] and numerics with [as.numeric()] as
-  needed — Socrata returns all values as text in JSON.
+A \code{\link[tibble:tibble]{tibble::tibble()}}. With \code{coerce = FALSE} (default), all columns
+are character strings. With \code{coerce = TRUE}, typed columns are converted.
 }
 \description{
-Fetches data from a Socrata portal using the SODA 3 POST query API.
-Pagination is handled automatically; callers never manage page numbers.
+Fetches data from a Socrata portal. By default uses the SODA 3 JSON query
+API. Set \code{format = "csv"} to use the SODA 2 CSV download path (often faster
+for large public datasets, matching RSocrata's CSV behaviour).
 }
 \section{Pagination}{
 
-SODA 3 exposes only page-number pagination — there is no server-side cursor.
+SODA 3 exposes only page-number pagination - there is no server-side cursor.
 This function manages page numbers internally and stops as soon as a page
-returns fewer rows than `page_size`, which is the API's signal that all
-data has been retrieved. Socrata's own docs note that performance degrades
-at very high page numbers, so use `soql` filters to reduce result sets when
-fetching from large datasets.
+returns fewer rows than \code{page_size}, which is the API's signal that all
+data has been retrieved. CSV downloads use \verb{$limit} / \verb{$offset} (or
+\code{LIMIT} / \code{OFFSET} inside \verb{$query}).
 }
 
 \examples{
 \dontrun{
-# Full URL
+# Full URL (JSON)
 df <- read_socrata("https://data.somervillema.gov/resource/abcd-1234")
 
-# Bare 4x4 + domain
-df <- read_socrata("abcd-1234", domain = "data.somervillema.gov")
-
-# With a SoQL filter and app token
+# CSV download (often faster for large public datasets)
 df <- read_socrata(
-  url       = "https://data.somervillema.gov/resource/abcd-1234",
-  soql      = "SELECT name, opened_date WHERE status = 'Open'",
-  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+  "https://data.somervillema.gov/resource/abcd-1234",
+  format = "csv"
+)
+
+# Auto date / type coercion
+df <- read_socrata(
+  "https://data.somervillema.gov/resource/abcd-1234",
+  coerce = TRUE
 )
 }
 

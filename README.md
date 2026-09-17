@@ -1,13 +1,12 @@
 # socratr
 
-A fast, modern R interface to [Socrata](https://www.tylertech.com/products/data-insights) open data portals.
+A fast R interface to [Socrata](https://dev.socrata.com) open data portals.
 
-- **Read** via SODA 3 (`POST /api/v3/views/{id}/query.json`) with automatic pagination
-- **Write** via SODA 2 (`POST|PUT /resource/{id}.json`) with chunked upsert/replace
-- **List** datasets via the Socrata Discovery API v1
+- **Read** via SODA 3 JSON or SODA 2 CSV, with automatic pagination
+- **Coerce** column types from schema metadata (`coerce = TRUE`)
+- **Write** via SODA 2 upsert / replace (chunked, optional parallel)
+- **List** datasets via the Discovery API
 - **Parallel** read and write for large datasets
-
----
 
 ## Installation
 
@@ -16,223 +15,160 @@ A fast, modern R interface to [Socrata](https://www.tylertech.com/products/data-
 devtools::install_github("dschaadt/socratr")
 ```
 
----
-
 ## Quick start
 
 ```r
 library(socratr)
 
-# Read a full dataset
+# JSON (SODA 3) — default
 df <- read_socrata("https://data.example.gov/resource/abcd-1234")
 
-# With a SoQL filter and app token
+# CSV (SODA 2) — often faster for large public datasets
 df <- read_socrata(
-  url       = "https://data.example.gov/resource/abcd-1234",
-  soql      = "SELECT name, opened_date WHERE status = 'Open'",
+  "https://data.example.gov/resource/abcd-1234",
+  format = "csv",
+  coerce = TRUE,
   app_token = Sys.getenv("SOCRATA_APP_TOKEN")
 )
 
-# List datasets on a domain
+# Parallel fetch
+df <- read_socrata_parallel(
+  "https://data.example.gov/resource/abcd-1234",
+  format = "csv",
+  max_active = 10L,
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+)
+
+# List datasets
 ls_socrata("data.example.gov")
 
-# Upload data
+# Upload
 write_socrata(
   dataframe    = my_df,
   domain       = "data.example.gov",
   dataset_id   = "abcd-1234",
   update_mode  = "UPSERT",
   socrata_user = Sys.getenv("SOCRATA_USER"),
-  password     = Sys.getenv("SOCRATA_KEY")
+  password     = Sys.getenv("SOCRATA_PASSWORD")
 )
 ```
 
----
+## Authentication
+
+Store credentials in environment variables (never commit them):
+
+```r
+Sys.setenv(
+  SOCRATA_APP_TOKEN  = "your_app_token",
+  SOCRATA_USER       = "your@email.com_or_api_key_id",
+  SOCRATA_PASSWORD   = "your_password_or_api_secret"
+)
+```
+
+An app token is optional but strongly recommended — it raises anonymous
+rate limits. Register at [dev.socrata.com/register](https://dev.socrata.com/register).
+
+Live tests look for `SOCRATA_USER`, `SOCRATA_PASSWORD`, and `SOCRATA_TOKEN`
+(alias for the app token).
 
 ## Functions
 
 ### `read_socrata()`
 
-Fetches a dataset via SODA 3. Pagination is handled automatically — callers never touch page numbers. All columns are returned as character strings; use `coerce_socrata_types()` or `posixify()` / `as.numeric()` to convert as needed.
+Fetches a dataset with automatic pagination.
+
+| Argument | Notes |
+|---|---|
+| `format` | `"json"` (SODA 3, default) or `"csv"` (SODA 2) |
+| `coerce` | `TRUE` → dates / numbers / checkboxes typed from metadata |
+| `page_size` | Default 5 000 (JSON) or 50 000 (CSV); max 50 000 |
+| `soql` | SoQL string; do not include `LIMIT` / `OFFSET` |
 
 ```r
 df <- read_socrata(
-  url          = "https://data.example.gov/resource/abcd-1234",
-  soql         = "SELECT name, value WHERE value > 100 ORDER BY value DESC",
-  app_token    = Sys.getenv("SOCRATA_APP_TOKEN"),
-  socrata_user = Sys.getenv("SOCRATA_USER"),   # required for private datasets
-  password     = Sys.getenv("SOCRATA_KEY"),
-  page_size    = 5000L,   # rows per request (max 50 000)
-  max_rows     = Inf,     # hard cap on total rows returned
-  verbose      = FALSE
+  url       = "https://data.example.gov/resource/abcd-1234",
+  soql      = "SELECT name, value WHERE value > 100 ORDER BY value DESC",
+  app_token = Sys.getenv("SOCRATA_APP_TOKEN"),
+  format    = "json",
+  coerce    = FALSE
 )
 ```
 
-**Pagination note:** SODA 3 exposes only page-number pagination — there is no server-side cursor. `read_socrata()` stops as soon as a page returns fewer rows than `page_size`. For large datasets with SoQL filters, prefer explicit `WHERE` clauses over high page numbers, as Socrata performance degrades at high offsets.
-
----
-
 ### `read_socrata_parallel()`
 
-A drop-in replacement for `read_socrata()` that fetches pages concurrently. Runs a metadata preflight to determine the total row count, pre-builds all page requests, then fires them in parallel via `httr2::req_perform_parallel()`.
+Same interface as `read_socrata()`, but fetches pages concurrently. Supports
+both JSON and CSV. Failed pages abort the whole read (no silent partial
+results). Prefer the serial reader when you need per-page retries.
 
 ```r
 df <- read_socrata_parallel(
   url        = "https://data.example.gov/resource/abcd-1234",
-  app_token  = Sys.getenv("SOCRATA_APP_TOKEN"),
-  page_size  = 5000L,
-  max_active = 10L   # concurrent connections; keep ≤ 10 to avoid rate limiting
+  format     = "csv",
+  max_active = 10L,
+  app_token  = Sys.getenv("SOCRATA_APP_TOKEN")
 )
 ```
 
-**When to use:** Datasets with more than ~10 000 rows where network latency is the bottleneck. For smaller datasets the preflight `COUNT(*)` overhead outweighs the benefit.
+### `write_socrata()` / `write_socrata_parallel()`
 
-**Limitation:** Failed pages abort the whole read with an error (no silent
-partial results). Use `read_socrata()` if retry-on-failure is required.
-
----
-
-### `write_socrata()`
-
-Uploads a data frame to Socrata via SODA 2. Large uploads are split into chunks automatically.
+Upload via SODA 2. `UPSERT` can be chunked (and parallelized);
+`REPLACE` is always a single atomic `PUT`.
 
 ```r
 write_socrata(
   dataframe    = my_df,
   domain       = "data.example.gov",
   dataset_id   = "abcd-1234",
-  update_mode  = "UPSERT",   # or "REPLACE"
+  update_mode  = "UPSERT",  # or "REPLACE"
   socrata_user = Sys.getenv("SOCRATA_USER"),
-  password     = Sys.getenv("SOCRATA_KEY"),
-  app_token    = Sys.getenv("SOCRATA_APP_TOKEN"),
+  password     = Sys.getenv("SOCRATA_PASSWORD"),
   chunk_size   = 10000L
 )
 ```
 
-| `update_mode` | HTTP method | Behaviour |
-|---|---|---|
-| `"UPSERT"` | `POST` | Add or update rows by primary key |
-| `"REPLACE"` | `PUT` | Overwrite the full dataset atomically |
-
----
-
-### `write_socrata_parallel()`
-
-A drop-in replacement for `write_socrata()` for large `UPSERT` operations. Sends chunks concurrently. `REPLACE` mode always falls back to `write_socrata()` since it must be a single atomic `PUT`.
+### `ls_socrata()` / `get_metadata()` / `coerce_socrata_types()`
 
 ```r
-write_socrata_parallel(
-  dataframe    = my_large_df,
-  domain       = "data.example.gov",
-  dataset_id   = "abcd-1234",
-  update_mode  = "UPSERT",
-  socrata_user = Sys.getenv("SOCRATA_USER"),
-  password     = Sys.getenv("SOCRATA_KEY"),
-  chunk_size   = 10000L,
-  max_active   = 10L
-)
-```
-
----
-
-### `ls_socrata()`
-
-Lists datasets available on a Socrata domain using the Discovery API.
-
-```r
-ls_socrata("data.example.gov")
 ls_socrata("data.example.gov", search = "permits", limit = 20)
-```
 
-Returns a tibble with columns: `name`, `id`, `type`, `updated` (POSIXct), `description`, `url`.
-
----
-
-### `get_metadata()`
-
-Fetches schema and dataset-level metadata without downloading any rows. Useful for inspecting column types before reading, or for building dynamic SoQL `SELECT` clauses.
-
-```r
 meta <- get_metadata("https://data.example.gov/resource/abcd-1234")
+meta$columns
 
-meta$name        # dataset display name
-meta$row_count   # approximate row count
-meta$updated     # last-modified timestamp (POSIXct)
-meta$columns     # tibble: field_name, display_name, data_type, description
-
-# Build a SELECT from metadata
-fields <- paste(meta$columns$field_name, collapse = ", ")
-df <- read_socrata(
-  "https://data.example.gov/resource/abcd-1234",
-  soql = paste("SELECT", fields)
-)
+df <- read_socrata("https://data.example.gov/resource/abcd-1234")
+df <- coerce_socrata_types(df, meta)  # or coerce = TRUE on read
 ```
-
----
-
-### `coerce_socrata_types()`
-
-Applies type conversions to a tibble returned by `read_socrata()`, based on the schema from `get_metadata()`. Numeric columns become `numeric`, date columns become `POSIXct`, checkbox columns become `logical`.
-
-```r
-meta <- get_metadata("https://data.example.gov/resource/abcd-1234")
-df   <- read_socrata("https://data.example.gov/resource/abcd-1234")
-df   <- coerce_socrata_types(df, meta)
-```
-
----
 
 ### `tune_socrata_parallel()`
 
-Benchmarks `max_active` and `page_size` for a specific dataset to find the optimal settings for `read_socrata_parallel()`. Runs two sequential sweeps and saves a two-panel plot.
-
-```r
-tune <- tune_socrata_parallel(
-  url       = "https://data.example.gov/resource/abcd-1234",
-  app_token = Sys.getenv("SOCRATA_APP_TOKEN"),
-  path      = "socrata_tune.png"
-)
-
-tune$optimal_max_active
-tune$optimal_page_size
-```
-
----
+Benchmarks `max_active` and `page_size` for a dataset (requires
+`ggplot2`, `patchwork`, `scales`, `dplyr`).
 
 ### Utilities
 
 | Function | Description |
 |---|---|
-| `is_four_by_four(x)` | Returns `TRUE` if `x` matches the `xxxx-xxxx` Socrata dataset ID format |
-| `posixify(x)` | Parses ISO 8601 and `mm/dd/yyyy` date strings to `POSIXct` |
+| `is_four_by_four(x)` | Valid `xxxx-xxxx` dataset ID? |
+| `posixify(x)` | Parse ISO 8601 / `mm/dd/yyyy` to `POSIXct` |
 
----
+## Performance notes
 
-## Authentication
+On a ~1.2M-row portal dataset (Somerville 311), approximate wall times were:
 
-All read and write functions accept `app_token`, `socrata_user`, and `password`. Store credentials in environment variables rather than in scripts:
+| Method | Elapsed |
+|---|---:|
+| RSocrata JSON | ~140 s |
+| RSocrata CSV | ~94 s |
+| socratr sequential JSON | ~128 s |
+| socratr parallel CSV/JSON | ~9–10 s |
 
-```r
-Sys.setenv(
-  SOCRATA_APP_TOKEN = "your_token",
-  SOCRATA_USER      = "your@email.com",
-  SOCRATA_KEY       = "your_password_or_api_key"
-)
-```
-
-An app token is not required but is strongly recommended — it raises the anonymous rate limit significantly. Register for one at [dev.socrata.com/register](https://dev.socrata.com/register).
-
----
+Parallel reads shine above ~10k rows. For smaller pulls, sequential is fine.
 
 ## Acknowledgements
 
-`socratr` was inspired by [`RSocrata`](https://github.com/Chicago/RSocrata), 
-originally developed by the City of Chicago. While `socratr` is a ground-up 
-rewrite using SODA 3, `httr2`, and a parallel fetch architecture, RSocrata 
-pioneered R access to Socrata portals and deserves full credit for that. I 
-would also like to thank the SomerStat office in the City of Somerville 
-for supporting the development process of `socratr`.
+Inspired by [`RSocrata`](https://github.com/Chicago/RSocrata) (City of
+Chicago). Thanks to the SomerStat office in the City of Somerville for
+supporting development.
 
 ## Issues
 
-Please report bugs and feature requests via [GitHub Issues](https://github.com/dschaadt/socratr/issues).
+[GitHub Issues](https://github.com/dschaadt/socratr/issues)

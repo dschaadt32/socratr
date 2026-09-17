@@ -21,7 +21,7 @@ tune_socrata_parallel(
 \arguments{
 \item{url}{Character. A full Socrata dataset URL or bare 4x4 ID.}
 
-\item{domain}{Character. Required only when `url` is a bare 4x4 ID.}
+\item{domain}{Character. Required only when \code{url} is a bare 4x4 ID.}
 
 \item{app_token}{Character (optional). Socrata Application Token.}
 
@@ -29,36 +29,38 @@ tune_socrata_parallel(
 
 \item{password}{Character (optional). Socrata password or API Secret Key.}
 
-\item{soql}{Character. SoQL query (default `"SELECT *"`).}
+\item{soql}{Character. SoQL query (default \code{"SELECT *"}).}
 
 \item{max_active_values}{Integer vector. Concurrency levels to test
-(default `c(1, 3, 5, 7, 10)`). Must stay within 1–10.}
+(default \code{c(1, 3, 5, 7, 10)}). Must stay within 1-10.}
 
 \item{page_size_values}{Integer vector. Page sizes to test
-(default `c(1000, 5000, 10000, 25000, 50000)`).}
+(default \code{c(1000, 5000, 10000, 25000, 50000)}).}
 
 \item{fixed_page_size}{Integer. Page size held constant during the
-`max_active` sweep (default `5000L`).}
+\code{max_active} sweep (default \code{5000L}).}
 
-\item{save_plot}{Logical. If `TRUE`, saves the plot to `path` (default `TRUE`).}
+\item{save_plot}{Logical. If \code{TRUE}, saves the plot to \code{path} (default \code{TRUE}).}
 
 \item{path}{Character. Output file path for the saved plot
-(default `"socrata_tune.png"`).}
+(default \code{"socrata_tune.png"}).}
 }
 \value{
 Invisibly returns a list with elements:
-  \describe{
-    \item{`max_active_results`}{data.frame of max_active sweep timings.}
-    \item{`page_size_results`}{data.frame of page_size sweep timings.}
-    \item{`optimal_max_active`}{Integer. Best max_active value found.}
-    \item{`optimal_page_size`}{Integer. Best page_size value found.}
-  }
+\describe{
+\item{\code{max_active_results}}{data.frame of max_active sweep timings.}
+\item{\code{page_size_results}}{data.frame of page_size sweep timings.}
+\item{\code{optimal_max_active}}{Integer. Best max_active value found.}
+\item{\code{optimal_page_size}}{Integer. Best page_size value found.}
+}
 }
 \description{
 Runs two sequential benchmarks:
-  1. Sweeps `max_active` with a fixed `page_size` to find the optimal
-     concurrency level.
-  2. Fixes `max_active` at the optimal value and sweeps `page_size`.
+\enumerate{
+\item Sweeps \code{max_active} with a fixed \code{page_size} to find the optimal
+concurrency level.
+\item Fixes \code{max_active} at the optimal value and sweeps \code{page_size}.
+}
 }
 \examples{
 \dontrun{

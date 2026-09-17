@@ -15,7 +15,7 @@ get_metadata(
 \arguments{
 \item{url}{Character. A full Socrata dataset URL or a bare 4x4 ID.}
 
-\item{domain}{Character. Required only when `url` is a bare 4x4 ID.}
+\item{domain}{Character. Required only when \code{url} is a bare 4x4 ID.}
 
 \item{app_token}{Character (optional). Socrata Application Token.}
 
@@ -25,26 +25,26 @@ get_metadata(
 }
 \value{
 A named list with elements:
-  \describe{
-    \item{`id`}{The 4x4 dataset identifier.}
-    \item{`name`}{Dataset display name.}
-    \item{`description`}{Dataset description.}
-    \item{`row_count`}{Approximate number of rows as reported by the API.}
-    \item{`updated`}{Last-modified timestamp as [POSIXct].}
-    \item{`columns`}{A [tibble::tibble()] with one row per column, containing
-      `field_name` (the API/SoQL name), `display_name`, `data_type`, and
-      `description`.}
-  }
+\describe{
+\item{\code{id}}{The 4x4 dataset identifier.}
+\item{\code{name}}{Dataset display name.}
+\item{\code{description}}{Dataset description.}
+\item{\code{row_count}}{Approximate number of rows as reported by the API.}
+\item{\code{updated}}{Last-modified timestamp as \link[lubridate:posix_utils]{lubridate::POSIXct}.}
+\item{\code{columns}}{A \code{\link[tibble:tibble]{tibble::tibble()}} with one row per column, containing
+\code{field_name} (the API/SoQL name), \code{display_name}, \code{data_type}, and
+\code{description}.}
+}
 }
 \description{
-Retrieves the full view metadata from `GET /api/views/{4x4}.json`, including
+Retrieves the full view metadata from \verb{GET /api/views/\{4x4\}.json}, including
 column names, API field names, data types, and dataset-level attributes such
 as description, row count, and last-modified timestamp.
 }
 \details{
 This is useful for inspecting a dataset's schema before reading it, building
-dynamic SoQL `SELECT` clauses, or passing column type information to
-[coerce_socrata_types()].
+dynamic SoQL \code{SELECT} clauses, or passing column type information to
+\code{\link[=coerce_socrata_types]{coerce_socrata_types()}}.
 }
 \examples{
 \dontrun{

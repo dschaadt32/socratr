@@ -1,28 +1,39 @@
+# socratr 0.2.0
+
+## New features
+
+* `format = "csv"` on `read_socrata()` / `read_socrata_parallel()` for SODA 2
+  CSV downloads (often faster on large public datasets).
+* `coerce = TRUE` for automatic schema-based type coercion (dates → `POSIXct`,
+  numbers → `numeric`, checkboxes → `logical`), including `floating_timestamp`
+  and currency-style money fields.
+* Parallel CSV reads via offset-based SODA 2 pagination.
+
+## Bug fixes
+
+* Restored serial `write_socrata()`; fixed infinite recursion on REPLACE via
+  `write_socrata_parallel()`.
+* Fixed `ls_socrata()` / `get_metadata()` crashes from an undefined `verbose`
+  argument.
+* Re-enabled `page_size` and `max_active` validation; empty uploads no longer
+  error on `seq()`.
+* Parallel reads abort on failed pages instead of returning partial results.
+* Safer `NROW()` handling when a JSON page is non-tabular.
+
+## Packaging
+
+* Quarantined legacy `RSocrata` sources under `legacy/` (not installed).
+* Cleaned NAMESPACE / DESCRIPTION; plotting deps are Suggests only.
+* Fixed `tests/testthat.R` to load `socratr` (no hardcoded credentials).
+
 # socratr 0.1.0
 
 First release.
 
-## Bug fixes
+* `read_socrata()` — SODA 3 JSON with automatic pagination
+* `read_socrata_parallel()` — concurrent page fetching
+* `write_socrata()` / `write_socrata_parallel()` — SODA 2 upsert / replace
+* `ls_socrata()`, `get_metadata()`, `coerce_socrata_types()`
+* `tune_socrata_parallel()`, `is_four_by_four()`, `posixify()`
 
-* Restored serial `write_socrata()`; fixed infinite recursion when `write_socrata_parallel()` fell back to REPLACE
-* Fixed `ls_socrata()` / `get_metadata()` crashes from an undefined `verbose` argument
-* Re-enabled `page_size` and `max_active` validation; empty uploads no longer error on `seq()`
-* Parallel reads now abort on failed pages instead of returning partial results silently
-* Quarantined legacy `RSocrata.R` from the package build; cleaned NAMESPACE imports
-
-## New features
-
-* `read_socrata()` — fetch Socrata datasets via SODA 3 with automatic pagination
-* `read_socrata_parallel()` — concurrent page fetching for large datasets
-* `write_socrata()` — chunked upsert/replace via SODA 2
-* `write_socrata_parallel()` — concurrent chunk uploading for large upserts
-* `ls_socrata()` — list datasets on a domain via the Discovery API
-* `get_metadata()` — fetch schema and dataset-level metadata without downloading rows
-* `coerce_socrata_types()` — apply Socrata schema types to a tibble post-read
-* `tune_socrata_parallel()` — benchmark `max_active` and `page_size` for a dataset
-* `is_four_by_four()` and `posixify()` — utility functions
-
-## Acknowledgements
-
-Inspired by [`RSocrata`](https://github.com/Chicago/RSocrata) (City of Chicago, 2014),
-which pioneered R access to Socrata portals.
+Inspired by [`RSocrata`](https://github.com/Chicago/RSocrata) (City of Chicago).

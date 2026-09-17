@@ -8,18 +8,18 @@ ls_socrata(domain, limit = 100L, search = NULL, types = "dataset")
 }
 \arguments{
 \item{domain}{Character. The Socrata domain
-(e.g. `"data.somervillema.gov"`). Leading `https://` is stripped.}
+(e.g. \code{"data.somervillema.gov"}). Leading \verb{https://} is stripped.}
 
 \item{limit}{Integer. Maximum datasets to return (default 100, max 10 000).}
 
 \item{search}{Character (optional). Keyword filter applied server-side.}
 
 \item{types}{Character vector. Resource types to include (default
-`"dataset"`). Other values: `"map"`, `"chart"`, `"file"`.}
+\code{"dataset"}). Other values: \code{"map"}, \code{"chart"}, \code{"file"}.}
 }
 \value{
-A [tibble::tibble()] with columns `name`, `id`, `type`,
-  `updated` ([POSIXct]), `description`, and `url`.
+A \code{\link[tibble:tibble]{tibble::tibble()}} with columns \code{name}, \code{id}, \code{type},
+\code{updated} (\link[lubridate:posix_utils]{lubridate::POSIXct}), \code{description}, and \code{url}.
 }
 \description{
 Queries the Socrata Discovery API (catalog v1) to enumerate datasets on a

@@ -20,12 +20,12 @@ write_socrata_parallel(
 \item{dataframe}{A data frame or tibble to upload.}
 
 \item{domain}{Character. The Socrata domain
-(e.g. `"data.somervillema.gov"`).}
+(e.g. \code{"data.somervillema.gov"}).}
 
 \item{dataset_id}{Character. The 4x4 dataset identifier.}
 
-\item{update_mode}{Character. `"UPSERT"` (HTTP POST — add or update rows by
-primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).}
+\item{update_mode}{Character. \code{"UPSERT"} (HTTP POST - add or update rows by
+primary key) or \code{"REPLACE"} (HTTP PUT - overwrite the full dataset).}
 
 \item{socrata_user}{Character. Socrata account email or API Key ID.}
 
@@ -33,38 +33,38 @@ primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).}
 
 \item{app_token}{Character (optional). Socrata Application Token.}
 
-\item{chunk_size}{Integer. Rows per request for `UPSERT` (default 10 000).
-`REPLACE` always sends the full data frame in a single request.}
+\item{chunk_size}{Integer. Rows per request for \code{UPSERT} (default 10 000).
+\code{REPLACE} always sends the full data frame in a single request.}
 
 \item{max_active}{Integer. Maximum concurrent upload requests (default 10).
 Do not exceed 10 without explicit approval from your Socrata account team.}
 }
 \value{
 Invisibly returns a named list with elements:
-  \describe{
-    \item{`responses`}{List of `httr2` response objects for successful chunks.}
-    \item{`failures`}{List of error objects for failed chunks (empty on full success).}
-    \item{`summary`}{A data frame of aggregate row counts.}
-  }
+\describe{
+\item{\code{responses}}{List of \code{httr2} response objects for successful chunks.}
+\item{\code{failures}}{List of error objects for failed chunks (empty on full success).}
+\item{\code{summary}}{A data frame of aggregate row counts.}
+}
 }
 \description{
-A drop-in replacement for [write_socrata()] that sends chunks concurrently
-via [httr2::req_perform_parallel()] instead of a sequential `for` loop.
-Only `"UPSERT"` supports parallel sending; `"REPLACE"` is always a single
-atomic PUT and falls back to [write_socrata()] automatically.
+A drop-in replacement for \code{\link[=write_socrata]{write_socrata()}} that sends chunks concurrently
+via \code{\link[httr2:req_perform_parallel]{httr2::req_perform_parallel()}} instead of a sequential \code{for} loop.
+Only \code{"UPSERT"} supports parallel sending; \code{"REPLACE"} is always a single
+atomic PUT and falls back to \code{\link[=write_socrata]{write_socrata()}} automatically.
 }
 \section{When to use this}{
 
-For large `UPSERT` operations (>50 000 rows), parallel sending can reduce
-wall-clock time significantly. For `REPLACE`, or for smaller uploads, use
-[write_socrata()] — the parallelism overhead is not worth it below ~5 chunks.
+For large \code{UPSERT} operations (>50 000 rows), parallel sending can reduce
+wall-clock time significantly. For \code{REPLACE}, or for smaller uploads, use
+\code{\link[=write_socrata]{write_socrata()}} - the parallelism overhead is not worth it below ~5 chunks.
 }
 
 \section{Limitations}{
 
-`req_perform_parallel()` does not support `req_retry()`. Each chunk is sent
+\code{req_perform_parallel()} does not support \code{req_retry()}. Each chunk is sent
 once; failed chunks are reported in the return value but not retried.
-Use [write_socrata()] if retry-on-failure is required.
+Use \code{\link[=write_socrata]{write_socrata()}} if retry-on-failure is required.
 }
 
 \examples{

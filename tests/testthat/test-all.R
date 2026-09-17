@@ -2,10 +2,13 @@ library(testthat)
 library(httr2)
 
 # Credentials — set these as env vars; never hard-code in tests.
-# Sys.setenv(SOCRATA_USER = "...", SOCRATA_SECRET = "...", SOCRATA_TOKEN = "...")
+# Supports SOCRATA_TOKEN or SOCRATA_APP_TOKEN for the app token.
 socrata_user <- Sys.getenv("SOCRATA_USER")
 socrata_password <- Sys.getenv("SOCRATA_PASSWORD")
 app_token <- Sys.getenv("SOCRATA_TOKEN")
+if (!nzchar(app_token)) {
+  app_token <- Sys.getenv("SOCRATA_APP_TOKEN")
+}
 
 # Shared demo dataset (1007 rows, always public)
 DEMO_URL <- "https://soda.demo.socrata.com/resource/4334-bgaj"
@@ -166,7 +169,7 @@ skip_live <- function() {
   skip_on_cran()
   skip_if(
     !nzchar(socrata_user) && !nzchar(app_token),
-    "No Socrata credentials available — set SOCRATA_USER/SOCRATA_SECRET or SOCRATA_TOKEN."
+    "No Socrata credentials available — set SOCRATA_USER/SOCRATA_PASSWORD or SOCRATA_TOKEN."
   )
 }
 
@@ -239,11 +242,49 @@ test_that("read_socrata: column names are clean_names'd", {
   expect_true(all(grepl("^[a-z0-9_]+$", names(df))))
 })
 
-test_that("read_socrata: all columns are character", {
+test_that("read_socrata: all columns are character by default", {
   skip_live()
-  df <- read_socrata(DEMO_URL, app_token = app_token)
+  df <- read_socrata(DEMO_URL, app_token = app_token, coerce = FALSE)
   col_classes <- vapply(df, class, character(1L))
   expect_true(all(col_classes == "character"))
+})
+
+test_that("read_socrata: coerce=TRUE types date-like columns", {
+  skip_live()
+  df <- read_socrata(
+    "https://data.cityofnewyork.us/resource/erm2-nwe9",
+    soql = "SELECT created_date",
+    app_token = app_token,
+    max_rows = 20L,
+    coerce = TRUE
+  )
+  expect_s3_class(df$created_date, "POSIXct")
+})
+
+test_that("read_socrata: CSV format returns rows", {
+  skip_live()
+  df <- read_socrata(
+    DEMO_URL,
+    app_token = app_token,
+    format = "csv",
+    max_rows = 100L
+  )
+  expect_s3_class(df, "tbl_df")
+  expect_gt(nrow(df), 0L)
+  expect_lte(nrow(df), 100L)
+})
+
+test_that("read_socrata: CSV + coerce works together", {
+  skip_live()
+  df <- read_socrata(
+    DEMO_URL,
+    app_token = app_token,
+    format = "csv",
+    coerce = TRUE,
+    max_rows = 50L
+  )
+  expect_s3_class(df, "tbl_df")
+  expect_gt(nrow(df), 0L)
 })
 
 test_that("read_socrata: ISO 8601 dates parse correctly via posixify", {
@@ -406,12 +447,26 @@ test_that("coerce_socrata_types: number columns become numeric", {
   expect_equal(result$value, c(1.5, 2.0, 3.7))
 })
 
-test_that("coerce_socrata_types: calendar_date columns become POSIXct", {
+test_that("coerce_socrata_types: money strips currency symbols", {
+  df <- tibble::tibble(amount = c("$1.50", "$2,000.00", "3.7"))
+  meta <- list(
+    columns = data.frame(
+      field_name = "amount",
+      data_type = "money",
+      stringsAsFactors = FALSE
+    )
+  )
+  result <- coerce_socrata_types(df, meta)
+  expect_type(result$amount, "double")
+  expect_equal(result$amount, c(1.5, 2000.0, 3.7))
+})
+
+test_that("coerce_socrata_types: floating_timestamp columns become POSIXct", {
   df <- tibble::tibble(opened = c("2024-01-15T10:30:00", "2024-06-01T00:00:00"))
   meta <- list(
     columns = data.frame(
       field_name = "opened",
-      data_type = "calendar_date",
+      data_type = "floating_timestamp",
       stringsAsFactors = FALSE
     )
   )
@@ -766,7 +821,7 @@ skip_write <- function() {
   skip_on_cran()
   skip_if(
     !nzchar(socrata_user) || !nzchar(socrata_password),
-    "Write tests require SOCRATA_USER + SOCRATA_SECRET."
+    "Write tests require SOCRATA_USER + SOCRATA_PASSWORD."
   )
 }
 

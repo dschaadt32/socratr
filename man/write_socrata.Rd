@@ -19,12 +19,12 @@ write_socrata(
 \item{dataframe}{A data frame or tibble to upload.}
 
 \item{domain}{Character. The Socrata domain
-(e.g. `"data.somervillema.gov"`).}
+(e.g. \code{"data.somervillema.gov"}).}
 
 \item{dataset_id}{Character. The 4x4 dataset identifier.}
 
-\item{update_mode}{Character. `"UPSERT"` (HTTP POST — add or update rows by
-primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).}
+\item{update_mode}{Character. \code{"UPSERT"} (HTTP POST - add or update rows by
+primary key) or \code{"REPLACE"} (HTTP PUT - overwrite the full dataset).}
 
 \item{socrata_user}{Character. Socrata account email or API Key ID.}
 
@@ -32,12 +32,12 @@ primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).}
 
 \item{app_token}{Character (optional). Socrata Application Token.}
 
-\item{chunk_size}{Integer. Rows per request for `UPSERT` (default 10 000).
-`REPLACE` always sends the full data frame in a single request.}
+\item{chunk_size}{Integer. Rows per request for \code{UPSERT} (default 10 000).
+\code{REPLACE} always sends the full data frame in a single request.}
 }
 \value{
-Invisibly returns a list of `httr2` response objects (one per
-  chunk). Prints an aggregate upload summary as a side effect.
+Invisibly returns a list of \code{httr2} response objects (one per
+chunk). Prints an aggregate upload summary as a side effect.
 }
 \description{
 Serializes a data frame to JSON and sends it to the Socrata SODA 2 API.
@@ -45,7 +45,7 @@ Large uploads are automatically split into chunks.
 }
 \section{SODA version note}{
 
-Writing uses SODA 2 (`/resource/{id}.json`) because SODA 3 does not yet
+Writing uses SODA 2 (\verb{/resource/\{id\}.json}) because SODA 3 does not yet
 expose a write endpoint. SODA 2 write support is stable and is the approach
 recommended by Socrata / Tyler Technologies.
 }

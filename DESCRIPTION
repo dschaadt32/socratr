@@ -1,16 +1,19 @@
 Package: socratr
 Type: Package
 Title: Fast R Interface to Socrata Open Data Portals
-Description: Read, write, and list datasets on Socrata open data portals
-    <https://dev.socrata.com>. Fetches data via the SODA 3 POST query API
-    with automatic pagination, and supports parallel fetching and uploading
-    for large datasets. Converts dates to 'POSIX' format and manages
-    throttling. Inspired by the RSocrata package
-    <https://github.com/Chicago/RSocrata> by the City of Chicago.
-Version: 0.1.0
-Date: 2025-04-15
+Version: 0.2.0
+Date: 2026-09-16
 Authors@R: person("Derek Schaadt", email = "dschaadt@alum.mit.edu",
     role = c("aut", "cre"))
+Description: Read, write, and list datasets on Socrata open data portals
+    <https://dev.socrata.com>. Supports SODA 3 JSON and SODA 2 CSV downloads
+    with automatic pagination, optional schema-based type coercion, parallel
+    fetching and uploading for large datasets, and Discovery API listing.
+    Inspired by the RSocrata package
+    <https://github.com/Chicago/RSocrata> by the City of Chicago.
+License: MIT + file LICENSE
+URL: https://github.com/dschaadt/socratr
+BugReports: https://github.com/dschaadt/socratr/issues
 Depends:
     R (>= 4.1.0)
 Imports:
@@ -23,13 +26,16 @@ Imports:
 Suggests:
     testthat (>= 3.0.0),
     roxygen2 (>= 7.0.0),
+    knitr,
+    rmarkdown,
     dplyr,
     ggplot2,
     patchwork,
     scales,
-    devtools
-License: MIT + file LICENSE
-URL: https://github.com/dschaadt/socratr
-BugReports: https://github.com/dschaadt/socratr/issues
-RoxygenNote: 7.3.3
+    withr
+VignetteBuilder: knitr
+Config/testthat/edition: 3
 Encoding: UTF-8
+Language: en-US
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3

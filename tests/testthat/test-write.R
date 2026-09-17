@@ -1,4 +1,4 @@
-context("write Socrata datasets")
+# Write tests for socrata
 
 # Credentials — set as env vars; never hard-code.
 socrata_user <- Sys.getenv("SOCRATA_USER")

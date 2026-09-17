@@ -1,23 +1,25 @@
-/.git
-/.project
-/.Rbuildignore.Rcheck
-/.README.md.html
-/.settings
-/DESCRIPTION.Rcheck
-/out
-/RCheck
-/RSocrata_*.tar.gz
-/RSocrata.Rcheck
-*.pdf
-*.Rproj
-*.Rproj.user
-*.Rhistory
+## R / RStudio
 .Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
 
-# Local secrets / credentials — never commit
+## Secrets — never commit
 config.R
 .Renviron
 .Rprofile
 
-/.quarto/
+## Build artifacts
+*.tar.gz
+*.Rcheck
+.Rbuildignore.Rcheck
+
+## OS / editor
+.DS_Store
+.idea
+.vscode
+
+## Quarto
+.quarto/
 **/*.quarto_ipynb

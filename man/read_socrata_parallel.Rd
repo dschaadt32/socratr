@@ -11,26 +11,28 @@ read_socrata_parallel(
   app_token = NULL,
   socrata_user = NULL,
   password = NULL,
-  page_size = 5000L,
+  page_size = NULL,
   max_rows = Inf,
   max_active = 10L,
+  format = c("json", "csv"),
+  coerce = FALSE,
   verbose = FALSE
 )
 }
 \arguments{
-\item{url}{Character. A full Socrata dataset URL **or** a bare 4x4
-ID (e.g. `"abcd-1234"`). If a bare ID, `domain` is also required.}
+\item{url}{Character. A full Socrata dataset URL \strong{or} a bare 4x4
+ID (e.g. \code{"abcd-1234"}). If a bare ID, \code{domain} is also required.}
 
-\item{domain}{Character. Required only when `url` is a bare 4x4 ID.
-Leading `https://` and trailing paths are stripped automatically.}
+\item{domain}{Character. Required only when \code{url} is a bare 4x4 ID.
+Leading \verb{https://} and trailing paths are stripped automatically.}
 
 \item{soql}{Character. A plain SoQL query string (default
-`"SELECT *"`). Do **not** include `LIMIT` or `OFFSET`; pagination is
+\code{"SELECT *"}). Do \strong{not} include \code{LIMIT} or \code{OFFSET}; pagination is
 handled internally. Example:
-`"SELECT name, value WHERE value > 100 ORDER BY value DESC"`.}
+\code{"SELECT name, value WHERE value > 100 ORDER BY value DESC"}.}
 
 \item{app_token}{Character (optional). Socrata Application Token, sent as
-the `X-App-Token` header. Strongly recommended — raises the anonymous
+the \code{X-App-Token} header. Strongly recommended - raises the anonymous
 rate limit significantly.}
 
 \item{socrata_user}{Character (optional). Socrata account email or API Key
@@ -38,23 +40,31 @@ ID. Required for private datasets.}
 
 \item{password}{Character (optional). Socrata password or API Secret Key.}
 
-\item{page_size}{Integer. Rows fetched per request (default 5 000,
-max 50 000). Reduce if you see timeouts on wide or slow datasets.}
+\item{page_size}{Integer. Rows fetched per request (default 5 000 for
+JSON, 50 000 when \code{format = "csv"}; max 50 000).}
 
-\item{max_rows}{Integer or `Inf` (default). Hard cap on total rows
+\item{max_rows}{Integer or \code{Inf} (default). Hard cap on total rows
 returned. Useful for sampling or testing without pulling a full dataset.}
 
 \item{max_active}{Integer. Maximum concurrent requests (default 10).
 Values above 10 are rejected to reduce rate-limit risk.}
 
-\item{verbose}{Logical. If `TRUE`, prints a one-line progress message
-per page fetched (default `FALSE`).}
+\item{format}{Character. \code{"json"} (SODA 3, default) or \code{"csv"} (SODA 2).}
+
+\item{coerce}{Logical. If \code{TRUE}, fetch schema metadata and coerce
+columns to native R types (dates -> \code{POSIXct}, numbers -> \code{numeric},
+checkboxes -> \code{logical}), like RSocrata's automatic date conversion.
+Default \code{FALSE} (all columns remain character).}
+
+\item{verbose}{Logical. If \code{TRUE}, prints a one-line progress message
+per page fetched (default \code{FALSE}).}
 }
 \value{
-A [tibble::tibble()] with all columns as character strings.
+A \code{\link[tibble:tibble]{tibble::tibble()}}. With \code{coerce = FALSE} (default), all columns
+are character strings.
 }
 \description{
-A drop-in replacement for [read_socrata()] that fetches pages concurrently
+A drop-in replacement for \code{\link[=read_socrata]{read_socrata()}} that fetches pages concurrently
 instead of sequentially. Attempts a metadata preflight to determine the
 total row count and pre-build all page requests. If the row count is
 unavailable, falls back to the serial read_socrata strategy.

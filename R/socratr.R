@@ -1,18 +1,18 @@
 ###############################################################################
 # socratr: Interface to Socrata Datasets
 #
-# Read  — SODA 3  POST /api/v3/views/{id}/query.json
+# Read  - SODA 3  POST /api/v3/views/{id}/query.json
 #           Page-number pagination (the only mechanism SODA 3 exposes).
 #           Internally managed so callers never touch page numbers.
 #
-# Write — SODA 2  POST|PUT /resource/{id}.json
+# Write - SODA 2  POST|PUT /resource/{id}.json
 #           Chunked upsert / replace with aggregate summary.
 #
-# List  — Socrata Discovery API v1
+# List  - Socrata Discovery API v1
 #           https://api.us.socrata.com/api/catalog/v1
 ###############################################################################
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# -- Internal helpers --------
 
 #' Null-coalescing operator
 #' @noRd
@@ -67,7 +67,7 @@ resolve_dataset <- function(url, domain = NULL) {
   list(hostname = hostname, four_by_four = four_by_four)
 }
 
-# ── Public utilities ──────────────────────────────────────────────────────────
+# -- Public utilities --------
 
 #' Test whether a string is a valid Socrata 4x4 dataset identifier
 #'
@@ -87,6 +87,8 @@ is_four_by_four <- function(x) {
 #' Warns if any non-missing value fails to parse.
 #'
 #' @param x Character vector of date/time strings.
+#' @param verbose Logical. If `TRUE`, warn when values fail to parse
+#'   (default `FALSE`).
 #' @return A `POSIXct` vector in the system timezone.
 #' @examples
 #' posixify("2024-06-15T13:45:00.000")
@@ -117,20 +119,224 @@ posixify <- function(x, verbose = FALSE) {
   as.POSIXct(dt)
 }
 
-# ── Read ──────────────────────────────────────────────────────────────────────
+#' Strip trailing LIMIT / OFFSET from a SoQL string
+#' @noRd
+strip_soql_limit_offset <- function(soql) {
+  sub(
+    "(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$",
+    "",
+    trimws(soql),
+    perl = TRUE
+  )
+}
 
-#' Read a Socrata dataset via SODA 3
+#' Append LIMIT / OFFSET to a SoQL string
+#' @noRd
+append_soql_limit_offset <- function(soql, limit, offset) {
+  paste0(
+    strip_soql_limit_offset(soql),
+    " LIMIT ",
+    as.integer(limit),
+    " OFFSET ",
+    as.integer(offset)
+  )
+}
+
+#' Optionally coerce types via metadata after a read
+#' @noRd
+maybe_coerce_socrata <- function(
+  df,
+  coerce,
+  url,
+  domain,
+  app_token,
+  socrata_user,
+  password,
+  verbose = FALSE
+) {
+  if (!isTRUE(coerce) || nrow(df) == 0L) {
+    return(df)
+  }
+  if (verbose) {
+    message("Fetching metadata for type coercion ...")
+  }
+  meta <- tryCatch(
+    get_metadata(
+      url = url,
+      domain = domain,
+      app_token = app_token,
+      socrata_user = socrata_user,
+      password = password
+    ),
+    error = function(e) {
+      warning(
+        "Type coercion skipped; metadata request failed: ",
+        conditionMessage(e),
+        call. = FALSE
+      )
+      NULL
+    }
+  )
+  if (is.null(meta)) {
+    return(df)
+  }
+  coerce_socrata_types(df, meta)
+}
+
+#' Read via SODA 2 CSV with $limit / $offset pagination
+#' @noRd
+read_socrata_csv <- function(
+  url,
+  domain = NULL,
+  soql = "SELECT *",
+  app_token = NULL,
+  socrata_user = NULL,
+  password = NULL,
+  page_size = 50000L,
+  max_rows = Inf,
+  verbose = FALSE
+) {
+  ds <- resolve_dataset(url, domain)
+  endpoint <- paste0(
+    "https://",
+    ds$hostname,
+    "/resource/",
+    ds$four_by_four,
+    ".csv"
+  )
+
+  req_base <- httr2::request(endpoint) |>
+    httr2::req_user_agent(socratr_ua()) |>
+    httr2::req_headers("Accept" = "text/csv") |>
+    httr2::req_retry(max_tries = 3L, backoff = ~ 2^.x)
+
+  if (!is.null(app_token)) {
+    req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
+  }
+  if (!is.null(socrata_user) && !is.null(password)) {
+    req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
+  }
+
+  soql_base <- strip_soql_limit_offset(soql)
+  use_query <- !grepl("^SELECT\\s+\\*\\s*$", soql_base, ignore.case = TRUE)
+
+  all_pages <- vector("list", 64L)
+  page_index <- 0L
+  total_rows <- 0L
+  offset <- 0L
+
+  repeat {
+    rows_remaining <- max_rows - total_rows
+    if (rows_remaining <= 0L) {
+      break
+    }
+
+    this_page_size <- if (is.finite(rows_remaining)) {
+      as.integer(min(page_size, rows_remaining))
+    } else {
+      page_size
+    }
+
+    if (verbose) {
+      message(sprintf(
+        "Fetching CSV rows %d-%d ...",
+        offset + 1L,
+        offset + this_page_size
+      ))
+    }
+
+    req <- if (use_query) {
+      req_base |>
+        httr2::req_url_query(
+          `$query` = append_soql_limit_offset(soql_base, this_page_size, offset)
+        )
+    } else {
+      req_base |>
+        httr2::req_url_query(
+          `$limit` = this_page_size,
+          `$offset` = offset,
+          `$order` = ":id"
+        )
+    }
+
+    resp <- tryCatch(
+      httr2::req_perform(req),
+      error = function(e) {
+        api_msg <- if (!is.null(e$resp)) {
+          paste("HTTP", httr2::resp_status(e$resp))
+        } else {
+          conditionMessage(e)
+        }
+        stop(
+          sprintf("CSV request failed at offset %d: %s", offset, api_msg),
+          call. = FALSE
+        )
+      }
+    )
+
+    txt <- httr2::resp_body_string(resp)
+    batch_dt <- tryCatch(
+      data.table::fread(
+        text = txt,
+        showProgress = FALSE,
+        data.table = TRUE
+      ),
+      error = function(e) {
+        stop(
+          "Failed to parse CSV at offset ",
+          offset,
+          ": ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+      }
+    )
+
+    n_rows <- nrow(batch_dt)
+    if (n_rows == 0L) {
+      break
+    }
+
+    # Keep everything character for a stable coerce() path; fread may guess types
+    batch_dt <- batch_dt[, lapply(.SD, as.character)]
+
+    page_index <- page_index + 1L
+    all_pages[[page_index]] <- batch_dt
+    total_rows <- total_rows + n_rows
+
+    if (n_rows < this_page_size) {
+      break
+    }
+    offset <- offset + n_rows
+  }
+
+  if (total_rows == 0L) {
+    return(tibble::tibble())
+  }
+
+  final_dt <- data.table::rbindlist(
+    all_pages[seq_len(page_index)],
+    fill = TRUE,
+    use.names = TRUE
+  )
+  names(final_dt) <- janitor::make_clean_names(names(final_dt))
+  tibble::as_tibble(final_dt)
+}
+
+# -- Read --------
+
+#' Read a Socrata dataset
 #'
-#' Fetches data from a Socrata portal using the SODA 3 POST query API.
-#' Pagination is handled automatically; callers never manage page numbers.
+#' Fetches data from a Socrata portal. By default uses the SODA 3 JSON query
+#' API. Set `format = "csv"` to use the SODA 2 CSV download path (often faster
+#' for large public datasets, matching RSocrata's CSV behaviour).
 #'
 #' @section Pagination:
-#' SODA 3 exposes only page-number pagination — there is no server-side cursor.
+#' SODA 3 exposes only page-number pagination - there is no server-side cursor.
 #' This function manages page numbers internally and stops as soon as a page
 #' returns fewer rows than `page_size`, which is the API's signal that all
-#' data has been retrieved. Socrata's own docs note that performance degrades
-#' at very high page numbers, so use `soql` filters to reduce result sets when
-#' fetching from large datasets.
+#' data has been retrieved. CSV downloads use `$limit` / `$offset` (or
+#' `LIMIT` / `OFFSET` inside `$query`).
 #'
 #' @param url         Character. A full Socrata dataset URL **or** a bare 4x4
 #'   ID (e.g. `"abcd-1234"`). If a bare ID, `domain` is also required.
@@ -141,42 +347,49 @@ posixify <- function(x, verbose = FALSE) {
 #'   handled internally. Example:
 #'   `"SELECT name, value WHERE value > 100 ORDER BY value DESC"`.
 #' @param app_token   Character (optional). Socrata Application Token, sent as
-#'   the `X-App-Token` header. Strongly recommended — raises the anonymous
+#'   the `X-App-Token` header. Strongly recommended - raises the anonymous
 #'   rate limit significantly.
 #' @param socrata_user Character (optional). Socrata account email or API Key
 #'   ID. Required for private datasets.
 #' @param password    Character (optional). Socrata password or API Secret Key.
-#' @param page_size   Integer. Rows fetched per request (default 5 000,
-#'   max 50 000). Reduce if you see timeouts on wide or slow datasets.
+#' @param page_size   Integer. Rows fetched per request (default 5 000 for
+#'   JSON, 50 000 when `format = "csv"`; max 50 000).
 #' @param max_rows    Integer or `Inf` (default). Hard cap on total rows
 #'   returned. Useful for sampling or testing without pulling a full dataset.
+#' @param format      Character. `"json"` (SODA 3, default) or `"csv"` (SODA 2).
+#' @param coerce      Logical. If `TRUE`, fetch schema metadata and coerce
+#'   columns to native R types (dates -> `POSIXct`, numbers -> `numeric`,
+#'   checkboxes -> `logical`), like RSocrata's automatic date conversion.
+#'   Default `FALSE` (all columns remain character).
 #' @param verbose     Logical. If `TRUE`, prints a one-line progress message
 #'   per page fetched (default `FALSE`).
 #'
-#' @return A [tibble::tibble()] with all columns as character strings.
-#'   Convert dates with [posixify()] and numerics with [as.numeric()] as
-#'   needed — Socrata returns all values as text in JSON.
+#' @return A [tibble::tibble()]. With `coerce = FALSE` (default), all columns
+#'   are character strings. With `coerce = TRUE`, typed columns are converted.
 #'
 #' @examples
 #' \dontrun{
-#' # Full URL
+#' # Full URL (JSON)
 #' df <- read_socrata("https://data.somervillema.gov/resource/abcd-1234")
 #'
-#' # Bare 4x4 + domain
-#' df <- read_socrata("abcd-1234", domain = "data.somervillema.gov")
-#'
-#' # With a SoQL filter and app token
+#' # CSV download (often faster for large public datasets)
 #' df <- read_socrata(
-#'   url       = "https://data.somervillema.gov/resource/abcd-1234",
-#'   soql      = "SELECT name, opened_date WHERE status = 'Open'",
-#'   app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+#'   "https://data.somervillema.gov/resource/abcd-1234",
+#'   format = "csv"
+#' )
+#'
+#' # Auto date / type coercion
+#' df <- read_socrata(
+#'   "https://data.somervillema.gov/resource/abcd-1234",
+#'   coerce = TRUE
 #' )
 #' }
 #'
 #' @importFrom httr2 request req_body_json req_user_agent req_headers
-#'   req_auth_basic req_retry req_perform resp_body_raw
+#'   req_auth_basic req_retry req_perform resp_body_raw resp_body_string
+#'   req_url_query
 #' @importFrom yyjsonr read_json_raw
-#' @importFrom data.table as.data.table rbindlist
+#' @importFrom data.table as.data.table rbindlist fread
 #' @importFrom janitor make_clean_names
 #' @importFrom tibble as_tibble
 #' @export
@@ -187,17 +400,47 @@ read_socrata <- function(
   app_token = NULL,
   socrata_user = NULL,
   password = NULL,
-  page_size = 5000L,
+  page_size = NULL,
   max_rows = Inf,
+  format = c("json", "csv"),
+  coerce = FALSE,
   verbose = FALSE
 ) {
-  # ── Validate ─────
+  # -- Validate -----
   if (missing(url) || !nzchar(trimws(url))) {
     stop("`url` must be a non-empty string.", call. = FALSE)
+  }
+  format <- match.arg(format)
+  if (is.null(page_size)) {
+    page_size <- if (identical(format, "csv")) 50000L else 5000L
   }
   page_size <- as.integer(page_size)
   if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
     stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
+  }
+
+  if (identical(format, "csv")) {
+    df <- read_socrata_csv(
+      url = url,
+      domain = domain,
+      soql = soql,
+      app_token = app_token,
+      socrata_user = socrata_user,
+      password = password,
+      page_size = page_size,
+      max_rows = max_rows,
+      verbose = verbose
+    )
+    return(maybe_coerce_socrata(
+      df,
+      coerce,
+      url,
+      domain,
+      app_token,
+      socrata_user,
+      password,
+      verbose
+    ))
   }
 
   ds <- resolve_dataset(url, domain)
@@ -209,7 +452,7 @@ read_socrata <- function(
     "/query.json"
   )
 
-  # ── Build base request ─────────────────────────────────────────────────────
+  # -- Build base request --------
   # Auth headers are set once and reused for every page request.
   req_base <- httr2::request(endpoint) |>
     httr2::req_user_agent(socratr_ua()) |>
@@ -226,7 +469,7 @@ read_socrata <- function(
     req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
   }
 
-  # ── Paginate ───────────────────────────────────────────────────────────────
+  # -- Paginate --------
   # SODA 3 has no server-side cursor. Page numbers are managed here so callers
   # never see them. We stop when a page returns fewer rows than page_size,
   # which is the documented signal that there is no more data.
@@ -335,10 +578,20 @@ read_socrata <- function(
   )
   names(final_dt) <- janitor::make_clean_names(names(final_dt))
 
-  tibble::as_tibble(final_dt)
+  df <- tibble::as_tibble(final_dt)
+  maybe_coerce_socrata(
+    df,
+    coerce,
+    url,
+    domain,
+    app_token,
+    socrata_user,
+    password,
+    verbose
+  )
 }
 
-# ── Write ─────────────────────────────────────────────────────────────────────
+# -- Write --------
 
 #' Upload data to a Socrata dataset via SODA 2
 #'
@@ -354,8 +607,8 @@ read_socrata <- function(
 #' @param domain      Character. The Socrata domain
 #'   (e.g. `"data.somervillema.gov"`).
 #' @param dataset_id  Character. The 4x4 dataset identifier.
-#' @param update_mode Character. `"UPSERT"` (HTTP POST — add or update rows by
-#'   primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).
+#' @param update_mode Character. `"UPSERT"` (HTTP POST - add or update rows by
+#'   primary key) or `"REPLACE"` (HTTP PUT - overwrite the full dataset).
 #' @param socrata_user Character. Socrata account email or API Key ID.
 #' @param password    Character. Socrata password or API Secret Key.
 #' @param app_token   Character (optional). Socrata Application Token.
@@ -416,7 +669,7 @@ write_socrata <- function(
   hostname <- gsub("^https?://|/.*$", "", domain)
   base_url <- paste0("https://", hostname, "/resource/", dataset_id, ".json")
 
-  # ── Base request ───────────────────────────────────────────────────────────
+  # -- Base request --------
   req_base <- httr2::request(base_url) |>
     httr2::req_user_agent(socratr_ua()) |>
     httr2::req_auth_basic(socrata_user, password) |>
@@ -428,7 +681,7 @@ write_socrata <- function(
     req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
   }
 
-  # ── Chunk ──────────────────────────────────────────────────────────────────
+  # -- Chunk --------
   # REPLACE must be atomic (one PUT covering the whole dataset).
   # UPSERT can be safely chunked because it keys on the primary key.
   chunks <- if (update_mode == "REPLACE") {
@@ -449,7 +702,7 @@ write_socrata <- function(
     dataset_id
   ))
 
-  # ── Send ───────────────────────────────────────────────────────────────────
+  # -- Send --------
   responses <- vector("list", n_chunks)
   totals <- list(
     Rows_Created = 0L,
@@ -500,7 +753,7 @@ write_socrata <- function(
   invisible(responses)
 }
 
-# ── List ──────────────────────────────────────────────────────────────────────
+# -- List --------
 
 #' List datasets available on a Socrata domain
 #'
@@ -586,7 +839,7 @@ ls_socrata <- function(
   tibble::as_tibble(df)
 }
 
-# ── Metadata ──────────────────────────────────────────────────────────────────
+# -- Metadata --------
 
 #' Fetch schema and metadata for a Socrata dataset
 #'
@@ -670,7 +923,7 @@ get_metadata <- function(
 
   raw <- httr2::resp_body_json(resp, simplifyVector = FALSE)
 
-  # ── Parse columns ──────────────────────────────────────────────────────────
+  # -- Parse columns --------
   cols_raw <- raw$columns %||% list()
   columns_tbl <- tibble::tibble(
     field_name = vapply(
@@ -725,7 +978,7 @@ get_metadata <- function(
   )
 }
 
-# ── Type coercion ─────────────────────────────────────────────────────────────
+# -- Type coercion --------
 
 # Internal mapping from Socrata dataTypeName to an R coercion function.
 # All values in a freshly-read tibble are character; we coerce in place.
@@ -734,7 +987,7 @@ get_metadata <- function(
   # Numeric types
   "number" = as.numeric,
   "double" = as.numeric,
-  "money" = as.numeric,
+  "money" = function(x) as.numeric(gsub("[^0-9.-]", "", as.character(x))),
   "percent" = as.numeric,
   # Boolean
   "checkbox" = function(x) x == "true" | x == "TRUE" | x == "1",
@@ -742,6 +995,7 @@ get_metadata <- function(
   "calendar_date" = posixify,
   "date" = posixify,
   "fixed_timestamp" = posixify,
+  "floating_timestamp" = posixify,
   # Everything else (text, url, location, geo, etc.) stays character
   "text" = identity,
   "url" = identity,
@@ -790,24 +1044,24 @@ coerce_socrata_types <- function(df, meta) {
 
   # Normalise field names the same way read_socrata() does
   clean_fields <- janitor::make_clean_names(meta$columns$field_name)
-  type_map <- setNames(as.list(meta$columns$data_type), clean_fields)
+  type_map <- stats::setNames(as.list(meta$columns$data_type), clean_fields)
 
   for (col in names(df)) {
     # Use [[ with a default via %||%: missing keys return NULL from a list,
-    # which is safe to check with is.null — avoids subscriptOutOfBounds that
+    # which is safe to check with is.null - avoids subscriptOutOfBounds that
     # [[ throws on named *vectors* when a key is absent.
     dtype <- type_map[[col]] %||% NULL
     if (is.null(dtype)) {
       next
-    } # column not in metadata — leave untouched
+    } # column not in metadata - leave untouched
 
     fn <- .socrata_type_map[[dtype]]
     if (is.null(fn)) {
       next
-    } # unknown Socrata type — leave as char
+    } # unknown Socrata type - leave as char
     if (identical(fn, identity)) {
       next
-    } # text — nothing to do
+    } # text - nothing to do
 
     df[[col]] <- tryCatch(
       fn(df[[col]]),
@@ -829,7 +1083,7 @@ coerce_socrata_types <- function(df, meta) {
   return(df)
 }
 
-# ── Parallel read ─────────────────────────────────────────────────────────────
+# -- Parallel read --------
 
 #' Read a Socrata dataset in parallel (faster for large datasets)
 #'
@@ -842,13 +1096,14 @@ coerce_socrata_types <- function(df, meta) {
 #' @param max_active Integer. Maximum concurrent requests (default 10).
 #'   Values above 10 are rejected to reduce rate-limit risk.
 #'
-#' @return A [tibble::tibble()] with all columns as character strings.
+#' @return A [tibble::tibble()]. With `coerce = FALSE` (default), all columns
+#'   are character strings.
 #'
 #' @importFrom httr2 request req_body_json req_user_agent req_headers
 #'   req_auth_basic req_throttle req_perform req_perform_parallel
-#'   resp_body_raw resps_successes resps_failures
+#'   resp_body_raw resp_body_string req_url_query resps_successes resps_failures
 #' @importFrom yyjsonr read_json_raw
-#' @importFrom data.table as.data.table rbindlist
+#' @importFrom data.table as.data.table rbindlist fread
 #' @importFrom janitor make_clean_names
 #' @importFrom tibble as_tibble
 #' @export
@@ -859,14 +1114,20 @@ read_socrata_parallel <- function(
   app_token = NULL,
   socrata_user = NULL,
   password = NULL,
-  page_size = 5000L,
+  page_size = NULL,
   max_rows = Inf,
   max_active = 10L,
+  format = c("json", "csv"),
+  coerce = FALSE,
   verbose = FALSE
 ) {
-  # ── Validate ───────────────────────────────────────────────────────────────
+  # -- Validate --------
   if (missing(url) || !nzchar(trimws(url))) {
     stop("`url` must be a non-empty string.", call. = FALSE)
+  }
+  format <- match.arg(format)
+  if (is.null(page_size)) {
+    page_size <- if (identical(format, "csv")) 50000L else 5000L
   }
   page_size <- as.integer(page_size)
   max_active <- as.integer(max_active)
@@ -875,6 +1136,32 @@ read_socrata_parallel <- function(
   }
   if (is.na(max_active) || max_active < 1L || max_active > 10L) {
     stop("`max_active` must be between 1 and 10.", call. = FALSE)
+  }
+
+  # CSV parallel uses SODA 2 offset pages; otherwise fall through to JSON
+  if (identical(format, "csv")) {
+    df <- read_socrata_csv_parallel(
+      url = url,
+      domain = domain,
+      soql = soql,
+      app_token = app_token,
+      socrata_user = socrata_user,
+      password = password,
+      page_size = page_size,
+      max_rows = max_rows,
+      max_active = max_active,
+      verbose = verbose
+    )
+    return(maybe_coerce_socrata(
+      df,
+      coerce,
+      url,
+      domain,
+      app_token,
+      socrata_user,
+      password,
+      verbose
+    ))
   }
 
   ds <- resolve_dataset(url, domain)
@@ -886,7 +1173,7 @@ read_socrata_parallel <- function(
     "/query.json"
   )
 
-  # ── Build authenticated base request ──────────────────────────────────────
+  # -- Build authenticated base request --------
   req_base <- httr2::request(endpoint) |>
     httr2::req_user_agent(socratr_ua()) |>
     httr2::req_headers(
@@ -902,7 +1189,7 @@ read_socrata_parallel <- function(
     req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
   }
 
-  # ── Preflight: try metadata for row count ──────────────────────────────────
+  # -- Preflight: try metadata for row count --------
   total_rows_api <- tryCatch(
     {
       where_match <- regmatches(
@@ -941,7 +1228,7 @@ read_socrata_parallel <- function(
     error = function(e) NA_integer_
   )
 
-  # Getting the row count failed — fall back to serial read
+  # Getting the row count failed - fall back to serial read
   if (is.na(total_rows_api) || total_rows_api <= 0L) {
     if (verbose) {
       message("Row count unavailable. Using serial fetch ...")
@@ -955,11 +1242,13 @@ read_socrata_parallel <- function(
       password = password,
       page_size = page_size,
       max_rows = max_rows,
+      format = "json",
+      coerce = coerce,
       verbose = verbose
     ))
   }
 
-  # ── Preflight succeeded: pre-build all page requests ──────────────────────
+  # -- Preflight succeeded: pre-build all page requests --------
   total_rows_wanted <- if (is.finite(max_rows)) {
     as.integer(min(total_rows_api, max_rows))
   } else {
@@ -1053,10 +1342,212 @@ read_socrata_parallel <- function(
   final_dt <- data.table::rbindlist(all_pages, fill = TRUE, use.names = TRUE)
   names(final_dt) <- janitor::make_clean_names(names(final_dt))
 
+  df <- tibble::as_tibble(final_dt)
+  maybe_coerce_socrata(
+    df,
+    coerce,
+    url,
+    domain,
+    app_token,
+    socrata_user,
+    password,
+    verbose
+  )
+}
+
+#' Parallel CSV read via SODA 2 $limit / $offset pages
+#' @noRd
+read_socrata_csv_parallel <- function(
+  url,
+  domain = NULL,
+  soql = "SELECT *",
+  app_token = NULL,
+  socrata_user = NULL,
+  password = NULL,
+  page_size = 50000L,
+  max_rows = Inf,
+  max_active = 10L,
+  verbose = FALSE
+) {
+  ds <- resolve_dataset(url, domain)
+  endpoint <- paste0(
+    "https://",
+    ds$hostname,
+    "/resource/",
+    ds$four_by_four,
+    ".csv"
+  )
+
+  req_base <- httr2::request(endpoint) |>
+    httr2::req_user_agent(socratr_ua()) |>
+    httr2::req_headers("Accept" = "text/csv") |>
+    httr2::req_throttle(rate = 10 / 1)
+
+  if (!is.null(app_token)) {
+    req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
+  }
+  if (!is.null(socrata_user) && !is.null(password)) {
+    req_base <- req_base |> httr2::req_auth_basic(socrata_user, password)
+  }
+
+  soql_base <- strip_soql_limit_offset(soql)
+  use_query <- !grepl("^SELECT\\s+\\*\\s*$", soql_base, ignore.case = TRUE)
+
+  # COUNT via SODA 3 when possible; fall back to serial CSV
+  count_endpoint <- paste0(
+    "https://",
+    ds$hostname,
+    "/api/v3/views/",
+    ds$four_by_four,
+    "/query.json"
+  )
+  count_req <- httr2::request(count_endpoint) |>
+    httr2::req_user_agent(socratr_ua()) |>
+    httr2::req_headers(
+      "Accept" = "application/json",
+      "Content-Type" = "application/json"
+    )
+  if (!is.null(app_token)) {
+    count_req <- count_req |> httr2::req_headers("X-App-Token" = app_token)
+  }
+  if (!is.null(socrata_user) && !is.null(password)) {
+    count_req <- count_req |> httr2::req_auth_basic(socrata_user, password)
+  }
+
+  total_rows_api <- tryCatch(
+    {
+      where_match <- regmatches(
+        soql_base,
+        regexpr("(?i)\\bWHERE\\b.+", soql_base, perl = TRUE)
+      )
+      where_clause <- if (length(where_match) > 0L) {
+        sub(
+          "(?i)\\s+\\b(ORDER\\s+BY|GROUP\\s+BY|HAVING|LIMIT|OFFSET)\\b.*$",
+          "",
+          where_match[[1L]],
+          perl = TRUE
+        )
+      } else {
+        character(0L)
+      }
+      count_query <- if (length(where_clause) > 0L && nzchar(where_clause)) {
+        paste("SELECT COUNT(*)", where_clause)
+      } else {
+        "SELECT COUNT(*)"
+      }
+      count_resp <- httr2::req_perform(
+        count_req |>
+          httr2::req_body_json(list(
+            query = count_query,
+            page = list(pageNumber = 1L, pageSize = 1L),
+            includeSynthetic = FALSE
+          ))
+      )
+      parsed <- yyjsonr::read_json_raw(httr2::resp_body_raw(count_resp))
+      as.integer(parsed[[1]][[1]])
+    },
+    error = function(e) NA_integer_
+  )
+
+  if (is.na(total_rows_api) || total_rows_api <= 0L) {
+    if (verbose) {
+      message("Row count unavailable. Using serial CSV fetch ...")
+    }
+    return(read_socrata_csv(
+      url = url,
+      domain = domain,
+      soql = soql,
+      app_token = app_token,
+      socrata_user = socrata_user,
+      password = password,
+      page_size = page_size,
+      max_rows = max_rows,
+      verbose = verbose
+    ))
+  }
+
+  total_rows_wanted <- if (is.finite(max_rows)) {
+    as.integer(min(total_rows_api, max_rows))
+  } else {
+    total_rows_api
+  }
+  n_pages <- ceiling(total_rows_wanted / page_size)
+
+  if (verbose) {
+    message(sprintf(
+      "COUNT = %d rows. Fetching %d CSV page(s) of %d rows (max_active = %d) ...",
+      total_rows_api,
+      n_pages,
+      page_size,
+      max_active
+    ))
+  }
+
+  reqs <- lapply(seq_len(n_pages), function(p) {
+    offset <- as.integer((p - 1L) * page_size)
+    rows_this_page <- as.integer(min(page_size, total_rows_wanted - offset))
+    if (use_query) {
+      req_base |>
+        httr2::req_url_query(
+          `$query` = append_soql_limit_offset(soql_base, rows_this_page, offset)
+        )
+    } else {
+      req_base |>
+        httr2::req_url_query(
+          `$limit` = rows_this_page,
+          `$offset` = offset,
+          `$order` = ":id"
+        )
+    }
+  })
+
+  resps <- httr2::req_perform_parallel(
+    reqs,
+    on_error = "continue",
+    max_active = max_active,
+    progress = verbose
+  )
+
+  failed <- httr2::resps_failures(resps)
+  if (length(failed) > 0L) {
+    stop(
+      length(failed),
+      " of ",
+      length(reqs),
+      " CSV page request(s) failed.",
+      call. = FALSE
+    )
+  }
+
+  successful <- httr2::resps_successes(resps)
+  all_pages <- vector("list", length(successful))
+  for (i in seq_along(successful)) {
+    txt <- httr2::resp_body_string(successful[[i]])
+    batch_dt <- tryCatch(
+      data.table::fread(text = txt, showProgress = FALSE, data.table = TRUE),
+      error = function(e) {
+        warning("Failed to parse CSV page ", i, ": ", conditionMessage(e), call. = FALSE)
+        NULL
+      }
+    )
+    if (is.null(batch_dt) || nrow(batch_dt) == 0L) {
+      next
+    }
+    batch_dt <- batch_dt[, lapply(.SD, as.character)]
+    all_pages[[i]] <- batch_dt
+  }
+
+  all_pages <- Filter(Negate(is.null), all_pages)
+  if (length(all_pages) == 0L) {
+    return(tibble::tibble())
+  }
+
+  final_dt <- data.table::rbindlist(all_pages, fill = TRUE, use.names = TRUE)
+  names(final_dt) <- janitor::make_clean_names(names(final_dt))
   tibble::as_tibble(final_dt)
 }
 
-# ── Parallel write ────────────────────────────────────────────────────────────
+# -- Parallel write --------
 
 #' Upload data to Socrata in parallel (faster for large datasets)
 #'
@@ -1068,7 +1559,7 @@ read_socrata_parallel <- function(
 #' @section When to use this:
 #' For large `UPSERT` operations (>50 000 rows), parallel sending can reduce
 #' wall-clock time significantly. For `REPLACE`, or for smaller uploads, use
-#' [write_socrata()] — the parallelism overhead is not worth it below ~5 chunks.
+#' [write_socrata()] - the parallelism overhead is not worth it below ~5 chunks.
 #'
 #' @section Limitations:
 #' `req_perform_parallel()` does not support `req_retry()`. Each chunk is sent
@@ -1136,7 +1627,7 @@ write_socrata_parallel <- function(
     stop("`max_active` must be between 1 and 10.", call. = FALSE)
   }
 
-  # REPLACE is a single atomic PUT — parallelism doesn't apply.
+  # REPLACE is a single atomic PUT - parallelism doesn't apply.
   # Fall back to the serial write_socrata() which handles it correctly.
   if (update_mode == "REPLACE") {
     message(
@@ -1172,7 +1663,7 @@ write_socrata_parallel <- function(
   hostname <- gsub("^https?://|/.*$", "", domain)
   base_url <- paste0("https://", hostname, "/resource/", dataset_id, ".json")
 
-  # ── Base request ───────────────────────────────────────────────────────────
+  # -- Base request --------
   # req_throttle instead of req_retry: req_perform_parallel does not support
   # req_retry. We throttle to respect Socrata's rate limits.
   req_base <- httr2::request(base_url) |>
@@ -1186,7 +1677,7 @@ write_socrata_parallel <- function(
     req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
   }
 
-  # ── Build chunk requests ───────────────────────────────────────────────────
+  # -- Build chunk requests --------
   starts <- seq(1L, n_rows, by = chunk_size)
   n_chunks <- length(starts)
 
@@ -1204,7 +1695,7 @@ write_socrata_parallel <- function(
       httr2::req_body_raw(yyjsonr::write_json_raw(chunk), "application/json")
   })
 
-  # ── Fire in parallel ───────────────────────────────────────────────────────
+  # -- Fire in parallel --------
   resps <- httr2::req_perform_parallel(
     reqs,
     on_error = "continue",
@@ -1215,7 +1706,7 @@ write_socrata_parallel <- function(
   successful <- httr2::resps_successes(resps)
   failed <- httr2::resps_failures(resps)
 
-  # ── Aggregate summary from successful responses ────────────────────────────
+  # -- Aggregate summary from successful responses --------
   totals <- list(
     Rows_Created = 0L,
     Rows_Updated = 0L,
@@ -1293,7 +1784,7 @@ write_socrata_parallel <- function(
 #' @param password     Character (optional). Socrata password or API Secret Key.
 #' @param soql         Character. SoQL query (default `"SELECT *"`).
 #' @param max_active_values Integer vector. Concurrency levels to test
-#'   (default `c(1, 3, 5, 7, 10)`). Must stay within 1–10.
+#'   (default `c(1, 3, 5, 7, 10)`). Must stay within 1-10.
 #' @param page_size_values  Integer vector. Page sizes to test
 #'   (default `c(1000, 5000, 10000, 25000, 50000)`).
 #' @param fixed_page_size   Integer. Page size held constant during the
@@ -1349,7 +1840,7 @@ tune_socrata_parallel <- function(
     }
   }
 
-  # ── Shared call args (avoids repetition in both sweeps) ───────────────────
+  # -- Shared call args (avoids repetition in both sweeps) --------
   base_args <- list(
     url = url,
     domain = domain,
@@ -1359,7 +1850,7 @@ tune_socrata_parallel <- function(
     password = password
   )
 
-  # ── Dark theme (shared by both panels) ────────────────────────────────────
+  # -- Dark theme (shared by both panels) --------
   dark_theme <- ggplot2::theme_minimal(base_family = "mono") +
     ggplot2::theme(
       plot.background = ggplot2::element_rect(fill = "#0b0e14", color = NA),
@@ -1446,8 +1937,8 @@ tune_socrata_parallel <- function(
       dark_theme
   }
 
-  # ── Sweep 1: max_active ────────────────────────────────────────────────────
-  message("\n── Sweep 1/2: max_active (page_size = ", fixed_page_size, ") ──")
+  # -- Sweep 1: max_active --------
+  message("\n-- Sweep 1/2: max_active (page_size = ", fixed_page_size, ") --")
 
   ma_results <- dplyr::bind_rows(lapply(max_active_values, function(n) {
     message(sprintf("  Testing max_active = %d ...", n))
@@ -1471,7 +1962,7 @@ tune_socrata_parallel <- function(
 
   optimal_max_active <- ma_results$max_active[which.min(ma_results$elapsed)]
   message(sprintf(
-    "  → optimal max_active = %d (%.1fs)",
+    "  -> optimal max_active = %d (%.1fs)",
     optimal_max_active,
     min(ma_results$elapsed)
   ))
@@ -1482,13 +1973,13 @@ tune_socrata_parallel <- function(
     x_label = "max_active (parallel connections)",
     x_breaks = max_active_values,
     x_fmt_fn = as.character,
-    title = "Sweep 1 — max_active vs Elapsed Time",
+    title = "Sweep 1 - max_active vs Elapsed Time",
     subtitle = sprintf("page_size = %s (fixed)", scales::comma(fixed_page_size))
   )
 
-  # ── Sweep 2: page_size ────────────────────────────────────────────────────
+  # -- Sweep 2: page_size --------
   message(sprintf(
-    "\n── Sweep 2/2: page_size (max_active = %d) ──",
+    "\n-- Sweep 2/2: page_size (max_active = %d) --",
     optimal_max_active
   ))
 
@@ -1514,7 +2005,7 @@ tune_socrata_parallel <- function(
 
   optimal_page_size <- ps_results$page_size[which.min(ps_results$elapsed)]
   message(sprintf(
-    "  → optimal page_size = %s (%.1fs)",
+    "  -> optimal page_size = %s (%.1fs)",
     scales::comma(optimal_page_size),
     min(ps_results$elapsed)
   ))
@@ -1525,17 +2016,17 @@ tune_socrata_parallel <- function(
     x_label = "page_size (rows per request)",
     x_breaks = page_size_values,
     x_fmt_fn = function(x) scales::comma(x),
-    title = "Sweep 2 — page_size vs Elapsed Time",
+    title = "Sweep 2 - page_size vs Elapsed Time",
     subtitle = sprintf(
       "max_active = %d (optimal from Sweep 1)",
       optimal_max_active
     )
   )
 
-  # ── Combine panels & print ─────────────────────────────────────────────────
+  # -- Combine panels & print --------
   combined <- patchwork::wrap_plots(p1, p2, ncol = 2) +
     patchwork::plot_annotation(
-      title = "read_socrata_parallel — Parallel Tuning",
+      title = "read_socrata_parallel - Parallel Tuning",
       subtitle = url,
       theme = ggplot2::theme(
         plot.background = ggplot2::element_rect(fill = "#0b0e14", color = NA),
@@ -1567,9 +2058,9 @@ tune_socrata_parallel <- function(
     message("\nPlot saved to: ", path)
   }
 
-  # ── Final recommendation ───────────────────────────────────────────────────
+  # -- Final recommendation --------
   message(sprintf(
-    "\n── Recommendation ──────────────────────────────────────────\n  max_active = %d\n  page_size  = %s\n────────────────────────────────────────────────────────────",
+    "\n-- Recommendation --------\n  max_active = %d\n  page_size  = %s\n--------",
     optimal_max_active,
     scales::comma(optimal_page_size)
   ))

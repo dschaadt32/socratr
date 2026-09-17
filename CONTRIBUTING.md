@@ -4,7 +4,7 @@ Bug fixes and new features are welcome.
 
 ## Submitting a bug
 
-[Open an issue on GitHub](https://github.com/dschaadt/socratr/issues) and include:
+[Open an issue on GitHub](https://github.com/dschaadt32/socratr/issues) and include:
 
 * What you did
 * What happened

@@ -12,8 +12,8 @@ Description: Read, write, and list datasets on Socrata open data portals
     Inspired by the RSocrata package
     <https://github.com/Chicago/RSocrata> by the City of Chicago.
 License: MIT + file LICENSE
-URL: https://github.com/dschaadt/socratr
-BugReports: https://github.com/dschaadt/socratr/issues
+URL: https://github.com/dschaadt32/socratr
+BugReports: https://github.com/dschaadt32/socratr/issues
 Depends:
     R (>= 4.1.0)
 Imports:

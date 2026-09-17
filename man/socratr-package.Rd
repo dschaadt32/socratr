@@ -11,8 +11,8 @@ Read, write, and list datasets on Socrata open data portals \url{https://dev.soc
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/dschaadt/socratr}
-  \item Report bugs at \url{https://github.com/dschaadt/socratr/issues}
+  \item \url{https://github.com/dschaadt32/socratr}
+  \item Report bugs at \url{https://github.com/dschaadt32/socratr/issues}
 }
 
 }

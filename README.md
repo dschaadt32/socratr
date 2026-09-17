@@ -12,7 +12,7 @@ A fast R interface to [Socrata](https://dev.socrata.com) open data portals.
 
 ```r
 # install.packages("devtools")
-devtools::install_github("dschaadt/socratr")
+devtools::install_github("dschaadt32/socratr")
 ```
 
 ## Quick start
@@ -171,4 +171,4 @@ supporting development.
 
 ## Issues
 
-[GitHub Issues](https://github.com/dschaadt/socratr/issues)
+[GitHub Issues](https://github.com/dschaadt32/socratr/issues)

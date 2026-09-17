@@ -19,14 +19,15 @@ Imports:
     data.table,
     lubridate (>= 1.7.0),
     janitor,
-    tibble,
+    tibble
+Suggests:
+    testthat (>= 3.0.0),
+    roxygen2 (>= 7.0.0),
     dplyr,
     ggplot2,
     patchwork,
-    scales
-Suggests:
-    testthat (>= 3.0.0),
-    roxygen2 (>= 7.0.0)
+    scales,
+    devtools
 License: MIT + file LICENSE
 URL: https://github.com/dschaadt/socratr
 BugReports: https://github.com/dschaadt/socratr/issues

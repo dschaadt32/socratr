@@ -87,7 +87,8 @@ df <- read_socrata_parallel(
 
 **When to use:** Datasets with more than ~10 000 rows where network latency is the bottleneck. For smaller datasets the preflight `COUNT(*)` overhead outweighs the benefit.
 
-**Limitation:** Does not support automatic retry on failure. Failed pages are reported as warnings. Use `read_socrata()` if retry-on-failure is required.
+**Limitation:** Failed pages abort the whole read with an error (no silent
+partial results). Use `read_socrata()` if retry-on-failure is required.
 
 ---
 
@@ -230,8 +231,8 @@ originally developed by the City of Chicago. While `socratr` is a ground-up
 rewrite using SODA 3, `httr2`, and a parallel fetch architecture, RSocrata 
 pioneered R access to Socrata portals and deserves full credit for that. I 
 would also like to thank the SomerStat office in the City of Somerville 
-for supporting the delopment process of `socratr`.
+for supporting the development process of `socratr`.
 
 ## Issues
 
-Please report bugs and feature requests via [GitHub Issues](https://github.com/your-org/socratr/issues).
+Please report bugs and feature requests via [GitHub Issues](https://github.com/dschaadt/socratr/issues).

@@ -14,5 +14,10 @@
 *.Rhistory
 .Rproj.user
 
+# Local secrets / credentials — never commit
+config.R
+.Renviron
+.Rprofile
+
 /.quarto/
 **/*.quarto_ipynb

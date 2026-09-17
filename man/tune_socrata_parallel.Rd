@@ -11,7 +11,7 @@ tune_socrata_parallel(
   socrata_user = NULL,
   password = NULL,
   soql = "SELECT *",
-  max_active_values = c(1L, 5L, 10L, 15L, 20L, 25L),
+  max_active_values = c(1L, 3L, 5L, 7L, 10L),
   page_size_values = c(1000L, 5000L, 10000L, 25000L, 50000L),
   fixed_page_size = 5000L,
   save_plot = TRUE,
@@ -32,7 +32,7 @@ tune_socrata_parallel(
 \item{soql}{Character. SoQL query (default `"SELECT *"`).}
 
 \item{max_active_values}{Integer vector. Concurrency levels to test
-(default `c(1, 5, 10, 15, 20, 25)`).}
+(default `c(1, 3, 5, 7, 10)`). Must stay within 1–10.}
 
 \item{page_size_values}{Integer vector. Page sizes to test
 (default `c(1000, 5000, 10000, 25000, 50000)`).}

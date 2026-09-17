@@ -13,7 +13,7 @@ write_socrata_parallel(
   password,
   app_token = NULL,
   chunk_size = 10000L,
-  max_active = 20L
+  max_active = 10L
 )
 }
 \arguments{
@@ -36,7 +36,7 @@ primary key) or `"REPLACE"` (HTTP PUT — overwrite the full dataset).}
 \item{chunk_size}{Integer. Rows per request for `UPSERT` (default 10 000).
 `REPLACE` always sends the full data frame in a single request.}
 
-\item{max_active}{Integer. Maximum concurrent upload requests (default 5).
+\item{max_active}{Integer. Maximum concurrent upload requests (default 10).
 Do not exceed 10 without explicit approval from your Socrata account team.}
 }
 \value{
@@ -77,7 +77,7 @@ write_socrata_parallel(
   socrata_user = Sys.getenv("SOCRATA_USER"),
   password     = Sys.getenv("SOCRATA_KEY"),
   chunk_size   = 10000L,
-  max_active   = 20L
+  max_active   = 10L
 )
 }
 

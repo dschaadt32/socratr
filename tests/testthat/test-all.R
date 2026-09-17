@@ -50,7 +50,10 @@ test_that("posixify: empty input returns zero-length POSIXct", {
 })
 
 test_that("posixify: unparseable string warns and returns NA", {
-  expect_warning(result <- posixify("not-a-date"), "could not be parsed")
+  expect_warning(
+    result <- posixify("not-a-date", verbose = TRUE),
+    "could not be parsed"
+  )
   expect_true(is.na(result))
 })
 
@@ -615,7 +618,7 @@ test_that("get_metadata: field_names match column names returned by read_socrata
     socrata_user = socrata_user,
     password = socrata_password
   )
-  df <- socrata_read(DEMO_URL, max_rows = 1L)
+  df <- read_socrata(DEMO_URL, max_rows = 1L)
 
   # After clean_names, metadata field names should all appear in df
   clean_fields <- janitor::make_clean_names(meta$columns$field_name)
@@ -634,7 +637,7 @@ test_that("coerce_socrata_types: round-trips correctly against a live dataset", 
     socrata_user = socrata_user,
     password = socrata_password
   )
-  df <- socrata_read(DEMO_URL, max_rows = 50L)
+  df <- read_socrata(DEMO_URL, max_rows = 50L)
 
   # All columns should be character before coercion
   expect_true(all(vapply(df, is.character, logical(1L))))
@@ -739,7 +742,7 @@ test_that("read_socrata_parallel: soql filter is applied correctly", {
 
   expect_true(all(df_filtered$region == target))
   expect_lt(nrow(df_filtered), nrow(df_all))
-  expect_equal(df_filtered, df_all %>% dplyr::filter(region == target))
+  expect_equal(df_filtered, dplyr::filter(df_all, region == target))
 })
 
 ###############################################################################
@@ -803,7 +806,7 @@ test_that("write_socrata: UPSERT round-trip — values read back correctly", {
 
   Sys.sleep(2L)  # allow Socrata to index the write before reading back
 
-  result <- socrata_read(
+  result <- read_socrata(
     WRITE_UPSERT_URL,
     soql = sprintf("SELECT x, y WHERE x = '%d' AND y = '%d'", x, y)
   )
@@ -831,7 +834,7 @@ test_that("write_socrata: REPLACE overwrites dataset with new rows", {
 
   Sys.sleep(2L)
 
-  result <- socrata_read(WRITE_REPLACE_URL)
+  result <- read_socrata(WRITE_REPLACE_URL)
 
   # REPLACE should leave exactly the rows we sent
   expect_equal(nrow(result), nrow(df))
@@ -895,7 +898,7 @@ test_that("write_socrata_parallel: round-trip — values read back correctly", {
 
   Sys.sleep(2L)
 
-  result <- socrata_read(
+  result <- read_socrata(
     WRITE_UPSERT_URL,
     soql = sprintf("SELECT x, y WHERE x = '%d' AND y = '%d'", x, y)
   )
@@ -945,6 +948,6 @@ test_that("write_socrata_parallel: REPLACE falls back and completes", {
   )
 
   Sys.sleep(2L)
-  result <- socrata_read(WRITE_REPLACE_URL)
+  result <- read_socrata(WRITE_REPLACE_URL)
   expect_equal(nrow(result), nrow(df))
 })

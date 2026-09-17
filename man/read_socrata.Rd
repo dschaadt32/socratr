@@ -37,7 +37,7 @@ ID. Required for private datasets.}
 
 \item{password}{Character (optional). Socrata password or API Secret Key.}
 
-\item{page_size}{Integer. Rows fetched per request (default 2 000,
+\item{page_size}{Integer. Rows fetched per request (default 5 000,
 max 50 000). Reduce if you see timeouts on wide or slow datasets.}
 
 \item{max_rows}{Integer or `Inf` (default). Hard cap on total rows

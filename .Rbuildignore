@@ -15,3 +15,6 @@ CONTRIBUTING.md
 NEWS.md
 ^travis-tool\.sh$
 README.md
+^config\.R$
+^legacy$
+^README_files$

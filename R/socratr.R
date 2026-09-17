@@ -21,8 +21,14 @@
 #' Standard User-Agent string
 #' @noRd
 socratr_ua <- function() {
+  ver <- tryCatch(
+    as.character(utils::packageVersion("socratr")),
+    error = function(...) "0.0.0"
+  )
   paste0(
-    "RSocrata/2.0.0 (",
+    "socratr/",
+    ver,
+    " (",
     Sys.info()[["sysname"]],
     "; R/",
     paste0(R.version$major, ".", R.version$minor),
@@ -140,7 +146,7 @@ posixify <- function(x, verbose = FALSE) {
 #' @param socrata_user Character (optional). Socrata account email or API Key
 #'   ID. Required for private datasets.
 #' @param password    Character (optional). Socrata password or API Secret Key.
-#' @param page_size   Integer. Rows fetched per request (default 2 000,
+#' @param page_size   Integer. Rows fetched per request (default 5 000,
 #'   max 50 000). Reduce if you see timeouts on wide or slow datasets.
 #' @param max_rows    Integer or `Inf` (default). Hard cap on total rows
 #'   returned. Useful for sampling or testing without pulling a full dataset.
@@ -189,10 +195,10 @@ read_socrata <- function(
   if (missing(url) || !nzchar(trimws(url))) {
     stop("`url` must be a non-empty string.", call. = FALSE)
   }
-  # page_size <- as.integer(page_size)
-  # if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
-  #   stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
-  # }
+  page_size <- as.integer(page_size)
+  if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
+    stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
+  }
 
   ds <- resolve_dataset(url, domain)
   endpoint <- paste0(
@@ -292,8 +298,8 @@ read_socrata <- function(
       }
     )
 
-    n_rows <- nrow(parsed)
-    if (n_rows == 0L) {
+    n_rows <- NROW(parsed)
+    if (length(n_rows) != 1L || is.na(n_rows) || n_rows == 0L) {
       break
     }
 
@@ -385,119 +391,113 @@ write_socrata <- function(
   app_token = NULL,
   chunk_size = 10000L
 ) {
-  return(write_socrata_parallel(
-    dataframe = dataframe,
-    domain = domain,
-    dataset_id = dataset_id,
-    update_mode = update_mode,
-    socrata_user = socrata_user,
-    password = password,
-    app_token = app_token,
-    chunk_size = chunk_size,
-    max_active = 1 ## sequential write is same as parallel write with 1 thread
+  update_mode <- match.arg(update_mode)
+  chunk_size <- as.integer(chunk_size)
+
+  if (!is.data.frame(dataframe)) {
+    stop("`dataframe` must be a data frame.", call. = FALSE)
+  }
+  if (!nzchar(trimws(domain))) {
+    stop("`domain` must be a non-empty string.", call. = FALSE)
+  }
+  if (!is_four_by_four(dataset_id)) {
+    stop("`dataset_id` must be a valid 4x4 identifier.", call. = FALSE)
+  }
+  if (is.na(chunk_size) || chunk_size < 1L) {
+    stop("`chunk_size` must be a positive integer.", call. = FALSE)
+  }
+
+  n_rows <- nrow(dataframe)
+  if (n_rows == 0L) {
+    message("Nothing to upload: `dataframe` has 0 rows.")
+    return(invisible(list()))
+  }
+
+  hostname <- gsub("^https?://|/.*$", "", domain)
+  base_url <- paste0("https://", hostname, "/resource/", dataset_id, ".json")
+
+  # ── Base request ───────────────────────────────────────────────────────────
+  req_base <- httr2::request(base_url) |>
+    httr2::req_user_agent(socratr_ua()) |>
+    httr2::req_auth_basic(socrata_user, password) |>
+    httr2::req_headers("Accept" = "application/json") |>
+    httr2::req_retry(max_tries = 3L, backoff = ~ 2^.x) |>
+    httr2::req_method(if (update_mode == "UPSERT") "POST" else "PUT")
+
+  if (!is.null(app_token)) {
+    req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
+  }
+
+  # ── Chunk ──────────────────────────────────────────────────────────────────
+  # REPLACE must be atomic (one PUT covering the whole dataset).
+  # UPSERT can be safely chunked because it keys on the primary key.
+  chunks <- if (update_mode == "REPLACE") {
+    list(dataframe)
+  } else {
+    starts <- seq(1L, n_rows, by = chunk_size)
+    lapply(starts, function(i) {
+      dataframe[i:min(i + chunk_size - 1L, n_rows), , drop = FALSE]
+    })
+  }
+
+  n_chunks <- length(chunks)
+  message(sprintf(
+    "Starting %s of %d row(s) in %d chunk(s) to dataset %s ...",
+    update_mode,
+    n_rows,
+    n_chunks,
+    dataset_id
   ))
-  # update_mode <- match.arg(update_mode)
-  # chunk_size <- as.integer(chunk_size)
 
-  # if (!is.data.frame(dataframe)) {
-  #   stop("`dataframe` must be a data frame.", call. = FALSE)
-  # }
-  # if (!nzchar(trimws(domain))) {
-  #   stop("`domain` must be a non-empty string.", call. = FALSE)
-  # }
-  # if (!is_four_by_four(dataset_id)) {
-  #   stop("`dataset_id` must be a valid 4x4 identifier.", call. = FALSE)
-  # }
-  # if (is.na(chunk_size) || chunk_size < 1L) {
-  #   stop("`chunk_size` must be a positive integer.", call. = FALSE)
-  # }
+  # ── Send ───────────────────────────────────────────────────────────────────
+  responses <- vector("list", n_chunks)
+  totals <- list(
+    Rows_Created = 0L,
+    Rows_Updated = 0L,
+    Rows_Deleted = 0L,
+    Errors = 0L
+  )
 
-  # hostname <- gsub("^https?://|/.*$", "", domain)
-  # base_url <- paste0("https://", hostname, "/resource/", dataset_id, ".json")
+  for (i in seq_len(n_chunks)) {
+    raw_payload <- yyjsonr::write_json_raw(chunks[[i]])
 
-  # # ── Base request ───────────────────────────────────────────────────────────
-  # req_base <- httr2::request(base_url) |>
-  #   httr2::req_user_agent(socratr_ua()) |>
-  #   httr2::req_auth_basic(socrata_user, password) |>
-  #   httr2::req_headers("Accept" = "application/json") |>
-  #   httr2::req_retry(max_tries = 3L, backoff = ~ 2^.x) |>
-  #   httr2::req_method(if (update_mode == "UPSERT") "POST" else "PUT")
+    responses[[i]] <- tryCatch(
+      httr2::req_perform(
+        req_base |> httr2::req_body_raw(raw_payload, "application/json")
+      ),
+      error = function(e) {
+        api_msg <- if (!is.null(e$resp)) {
+          body <- tryCatch(
+            yyjsonr::read_json_raw(httr2::resp_body_raw(e$resp)),
+            error = function(...) list()
+          )
+          body$message %||% paste("HTTP", httr2::resp_status(e$resp))
+        } else {
+          conditionMessage(e)
+        }
+        stop(
+          sprintf("Chunk %d/%d failed: %s", i, n_chunks, api_msg),
+          call. = FALSE
+        )
+      }
+    )
 
-  # if (!is.null(app_token)) {
-  #   req_base <- req_base |> httr2::req_headers("X-App-Token" = app_token)
-  # }
+    summ <- tryCatch(
+      yyjsonr::read_json_raw(httr2::resp_body_raw(responses[[i]])),
+      error = function(...) list()
+    )
+    totals$Rows_Created <- totals$Rows_Created + (summ$Rows_Created %||% 0L)
+    totals$Rows_Updated <- totals$Rows_Updated + (summ$Rows_Updated %||% 0L)
+    totals$Rows_Deleted <- totals$Rows_Deleted + (summ$Rows_Deleted %||% 0L)
+    totals$Errors <- totals$Errors + (summ$Errors %||% 0L)
 
-  # # ── Chunk ──────────────────────────────────────────────────────────────────
-  # # REPLACE must be atomic (one PUT covering the whole dataset).
-  # # UPSERT can be safely chunked because it keys on the primary key.
-  # n_rows <- nrow(dataframe)
-  # chunks <- if (update_mode == "REPLACE") {
-  #   list(dataframe)
-  # } else {
-  #   starts <- seq(1L, n_rows, by = chunk_size)
-  #   lapply(starts, function(i) {
-  #     dataframe[i:min(i + chunk_size - 1L, n_rows), , drop = FALSE]
-  #   })
-  # }
+    message(sprintf("  Chunk %d/%d sent.", i, n_chunks))
+  }
 
-  # n_chunks <- length(chunks)
-  # message(sprintf(
-  #   "Starting %s of %d row(s) in %d chunk(s) to dataset %s ...",
-  #   update_mode,
-  #   n_rows,
-  #   n_chunks,
-  #   dataset_id
-  # ))
+  cat("\n--- Upload Summary ---\n")
+  print(as.data.frame(totals))
 
-  # # ── Send ───────────────────────────────────────────────────────────────────
-  # responses <- vector("list", n_chunks)
-  # totals <- list(
-  #   Rows_Created = 0L,
-  #   Rows_Updated = 0L,
-  #   Rows_Deleted = 0L,
-  #   Errors = 0L
-  # )
-
-  # for (i in seq_len(n_chunks)) {
-  #   raw_payload <- yyjsonr::write_json_raw(chunks[[i]])
-
-  #   responses[[i]] <- tryCatch(
-  #     httr2::req_perform(
-  #       req_base |> httr2::req_body_raw(raw_payload, "application/json")
-  #     ),
-  #     error = function(e) {
-  #       api_msg <- if (!is.null(e$resp)) {
-  #         body <- tryCatch(
-  #           yyjsonr::read_json_raw(httr2::resp_body_raw(e$resp)),
-  #           error = function(...) list()
-  #         )
-  #         body$message %||% paste("HTTP", httr2::resp_status(e$resp))
-  #       } else {
-  #         conditionMessage(e)
-  #       }
-  #       stop(
-  #         sprintf("Chunk %d/%d failed: %s", i, n_chunks, api_msg),
-  #         call. = FALSE
-  #       )
-  #     }
-  #   )
-
-  #   summ <- tryCatch(
-  #     yyjsonr::read_json_raw(httr2::resp_body_raw(responses[[i]])),
-  #     error = function(...) list()
-  #   )
-  #   totals$Rows_Created <- totals$Rows_Created + (summ$Rows_Created %||% 0L)
-  #   totals$Rows_Updated <- totals$Rows_Updated + (summ$Rows_Updated %||% 0L)
-  #   totals$Rows_Deleted <- totals$Rows_Deleted + (summ$Rows_Deleted %||% 0L)
-  #   totals$Errors <- totals$Errors + (summ$Errors %||% 0L)
-
-  #   message(sprintf("  Chunk %d/%d sent.", i, n_chunks))
-  # }
-
-  # cat("\n--- Upload Summary ---\n")
-  # print(as.data.frame(totals))
-
-  # invisible(responses)
+  invisible(responses)
 }
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -581,7 +581,7 @@ ls_socrata <- function(
   })
 
   df <- data.table::rbindlist(resources, fill = TRUE)
-  df[, updated := posixify(updated, verbose)]
+  df[, updated := posixify(updated)]
 
   tibble::as_tibble(df)
 }
@@ -718,10 +718,8 @@ get_metadata <- function(
         approx
       }
     },
-    ,
     updated = posixify(
-      as.character(raw$rowsUpdatedAt %||% NA_character_),
-      verbose
+      as.character(raw$rowsUpdatedAt %||% NA_character_)
     ),
     columns = columns_tbl
   )
@@ -841,7 +839,8 @@ coerce_socrata_types <- function(df, meta) {
 #' unavailable, falls back to the serial read_socrata strategy.
 #'
 #' @inheritParams read_socrata
-#' @param max_active Integer. Maximum concurrent requests (default 5).
+#' @param max_active Integer. Maximum concurrent requests (default 10).
+#'   Values above 10 are rejected to reduce rate-limit risk.
 #'
 #' @return A [tibble::tibble()] with all columns as character strings.
 #'
@@ -862,7 +861,7 @@ read_socrata_parallel <- function(
   password = NULL,
   page_size = 5000L,
   max_rows = Inf,
-  max_active = 20L,
+  max_active = 10L,
   verbose = FALSE
 ) {
   # ── Validate ───────────────────────────────────────────────────────────────
@@ -871,6 +870,12 @@ read_socrata_parallel <- function(
   }
   page_size <- as.integer(page_size)
   max_active <- as.integer(max_active)
+  if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
+    stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
+  }
+  if (is.na(max_active) || max_active < 1L || max_active > 10L) {
+    stop("`max_active` must be between 1 and 10.", call. = FALSE)
+  }
 
   ds <- resolve_dataset(url, domain)
   endpoint <- paste0(
@@ -900,12 +905,23 @@ read_socrata_parallel <- function(
   # ── Preflight: try metadata for row count ──────────────────────────────────
   total_rows_api <- tryCatch(
     {
-      where_clause <- regmatches(
+      where_match <- regmatches(
         soql,
-        regexpr("(?i)WHERE\\s+.+$", soql, perl = TRUE)
+        regexpr("(?i)\\bWHERE\\b.+", soql, perl = TRUE)
       )
+      where_clause <- if (length(where_match) > 0L) {
+        # Drop trailing ORDER BY / GROUP BY / HAVING / LIMIT / OFFSET so COUNT works
+        sub(
+          "(?i)\\s+\\b(ORDER\\s+BY|GROUP\\s+BY|HAVING|LIMIT|OFFSET)\\b.*$",
+          "",
+          where_match[[1L]],
+          perl = TRUE
+        )
+      } else {
+        character(0L)
+      }
 
-      count_query <- if (length(where_clause) > 0L) {
+      count_query <- if (length(where_clause) > 0L && nzchar(where_clause)) {
         paste("SELECT COUNT(*)", where_clause)
       } else {
         "SELECT COUNT(*)"
@@ -986,9 +1002,13 @@ read_socrata_parallel <- function(
 
   failed <- httr2::resps_failures(resps)
   if (length(failed) > 0L) {
-    warning(
+    stop(
       length(failed),
-      " page request(s) failed and will be missing from results.",
+      " of ",
+      length(reqs),
+      " page request(s) failed. ",
+      "Use read_socrata() for sequential fetch with retries, ",
+      "or reduce max_active / page_size.",
       call. = FALSE
     )
   }
@@ -1056,7 +1076,7 @@ read_socrata_parallel <- function(
 #' Use [write_socrata()] if retry-on-failure is required.
 #'
 #' @inheritParams write_socrata
-#' @param max_active Integer. Maximum concurrent upload requests (default 5).
+#' @param max_active Integer. Maximum concurrent upload requests (default 10).
 #'   Do not exceed 10 without explicit approval from your Socrata account team.
 #'
 #' @return Invisibly returns a named list with elements:
@@ -1076,7 +1096,7 @@ read_socrata_parallel <- function(
 #'   socrata_user = Sys.getenv("SOCRATA_USER"),
 #'   password     = Sys.getenv("SOCRATA_KEY"),
 #'   chunk_size   = 10000L,
-#'   max_active   = 20L
+#'   max_active   = 10L
 #' )
 #' }
 #'
@@ -1094,7 +1114,7 @@ write_socrata_parallel <- function(
   password,
   app_token = NULL,
   chunk_size = 10000L,
-  max_active = 20L
+  max_active = 10L
 ) {
   update_mode <- match.arg(update_mode)
   chunk_size <- as.integer(chunk_size)
@@ -1112,9 +1132,9 @@ write_socrata_parallel <- function(
   if (is.na(chunk_size) || chunk_size < 1L) {
     stop("`chunk_size` must be a positive integer.", call. = FALSE)
   }
-  # if (is.na(max_active) || max_active < 1L || max_active > 10L) {
-  #   stop("`max_active` must be between 1 and 10.", call. = FALSE)
-  # }
+  if (is.na(max_active) || max_active < 1L || max_active > 10L) {
+    stop("`max_active` must be between 1 and 10.", call. = FALSE)
+  }
 
   # REPLACE is a single atomic PUT — parallelism doesn't apply.
   # Fall back to the serial write_socrata() which handles it correctly.
@@ -1122,7 +1142,7 @@ write_socrata_parallel <- function(
     message(
       "REPLACE mode is always a single atomic PUT; falling back to write_socrata()."
     )
-    write_socrata(
+    return(write_socrata(
       dataframe = dataframe,
       domain = domain,
       dataset_id = dataset_id,
@@ -1131,8 +1151,22 @@ write_socrata_parallel <- function(
       password = password,
       app_token = app_token,
       chunk_size = chunk_size
-    )
-    return(invisible(NULL))
+    ))
+  }
+
+  n_rows <- nrow(dataframe)
+  if (n_rows == 0L) {
+    message("Nothing to upload: `dataframe` has 0 rows.")
+    return(invisible(list(
+      responses = list(),
+      failures = list(),
+      summary = data.frame(
+        Rows_Created = 0L,
+        Rows_Updated = 0L,
+        Rows_Deleted = 0L,
+        Errors = 0L
+      )
+    )))
   }
 
   hostname <- gsub("^https?://|/.*$", "", domain)
@@ -1153,7 +1187,6 @@ write_socrata_parallel <- function(
   }
 
   # ── Build chunk requests ───────────────────────────────────────────────────
-  n_rows <- nrow(dataframe)
   starts <- seq(1L, n_rows, by = chunk_size)
   n_chunks <- length(starts)
 
@@ -1210,11 +1243,14 @@ write_socrata_parallel <- function(
       call. = FALSE
     )
 
-    # Print error details
+    # Print error details (failures may be responses or error conditions)
     for (i in seq_along(failed)) {
       r <- failed[[i]]
       cat(sprintf("\n--- Chunk failure %d ---\n", i))
-      cat("Status:", httr2::resp_status(r), "\n")
+      status <- tryCatch(httr2::resp_status(r), error = function(...) NA_integer_)
+      if (!is.na(status)) {
+        cat("Status:", status, "\n")
+      }
       body <- tryCatch(
         yyjsonr::read_json_raw(httr2::resp_body_raw(r)),
         error = function(...) NULL
@@ -1223,8 +1259,8 @@ write_socrata_parallel <- function(
         cat("Response body:\n")
         print(body)
       } else {
-        cat("Raw body:\n")
-        cat(httr2::resp_body_string(r), "\n")
+        cat("Error:\n")
+        cat(conditionMessage(r), "\n")
       }
     }
   }
@@ -1257,7 +1293,7 @@ write_socrata_parallel <- function(
 #' @param password     Character (optional). Socrata password or API Secret Key.
 #' @param soql         Character. SoQL query (default `"SELECT *"`).
 #' @param max_active_values Integer vector. Concurrency levels to test
-#'   (default `c(1, 5, 10, 15, 20, 25)`).
+#'   (default `c(1, 3, 5, 7, 10)`). Must stay within 1–10.
 #' @param page_size_values  Integer vector. Page sizes to test
 #'   (default `c(1000, 5000, 10000, 25000, 50000)`).
 #' @param fixed_page_size   Integer. Page size held constant during the
@@ -1286,11 +1322,6 @@ write_socrata_parallel <- function(
 #' tune$optimal_page_size
 #' }
 #'
-#' @importFrom ggplot2 ggplot aes geom_area geom_line geom_point geom_hline
-#'   annotate scale_x_continuous labs theme_minimal theme element_rect
-#'   element_line element_text
-#' @importFrom dplyr bind_rows
-#' @importFrom scales comma
 #' @export
 tune_socrata_parallel <- function(
   url,
@@ -1299,12 +1330,25 @@ tune_socrata_parallel <- function(
   socrata_user = NULL,
   password = NULL,
   soql = "SELECT *",
-  max_active_values = c(1L, 5L, 10L, 15L, 20L, 25L),
+  max_active_values = c(1L, 3L, 5L, 7L, 10L),
   page_size_values = c(1000L, 5000L, 10000L, 25000L, 50000L),
   fixed_page_size = 5000L,
   save_plot = TRUE,
   path = "socrata_tune.png"
 ) {
+  for (pkg in c("dplyr", "ggplot2", "patchwork", "scales")) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(
+        "tune_socrata_parallel() requires the '",
+        pkg,
+        "' package. Install it with install.packages(\"",
+        pkg,
+        "\").",
+        call. = FALSE
+      )
+    }
+  }
+
   # ── Shared call args (avoids repetition in both sweeps) ───────────────────
   base_args <- list(
     url = url,

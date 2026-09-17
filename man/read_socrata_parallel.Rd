@@ -13,7 +13,7 @@ read_socrata_parallel(
   password = NULL,
   page_size = 5000L,
   max_rows = Inf,
-  max_active = 20L,
+  max_active = 10L,
   verbose = FALSE
 )
 }
@@ -38,52 +38,24 @@ ID. Required for private datasets.}
 
 \item{password}{Character (optional). Socrata password or API Secret Key.}
 
-\item{page_size}{Integer. Rows fetched per request (default 2 000,
+\item{page_size}{Integer. Rows fetched per request (default 5 000,
 max 50 000). Reduce if you see timeouts on wide or slow datasets.}
 
 \item{max_rows}{Integer or `Inf` (default). Hard cap on total rows
 returned. Useful for sampling or testing without pulling a full dataset.}
 
-\item{max_active}{Integer. Maximum concurrent requests (default 5). Keep
-this at 5 or below for Socrata APIs to avoid rate limiting. Socrata
-recommends no more than 10 concurrent authenticated requests.}
+\item{max_active}{Integer. Maximum concurrent requests (default 10).
+Values above 10 are rejected to reduce rate-limit risk.}
 
 \item{verbose}{Logical. If `TRUE`, prints a one-line progress message
 per page fetched (default `FALSE`).}
 }
 \value{
-A [tibble::tibble()] with all columns as character strings,
-  identical in structure to [read_socrata()].
+A [tibble::tibble()] with all columns as character strings.
 }
 \description{
 A drop-in replacement for [read_socrata()] that fetches pages concurrently
-instead of sequentially. It first runs a `SELECT COUNT(*)` preflight query
-to determine the total number of rows, pre-builds all page requests, then
-fires them in parallel via [httr2::req_perform_parallel()].
-}
-\section{When to use this}{
-
-For datasets with more than ~10 000 rows where network latency (not server
-throughput) is the bottleneck, parallel fetching can reduce wall-clock time
-by 3–8x. For smaller datasets the preflight `COUNT(*)` overhead outweighs
-the parallelism benefit; use [read_socrata()] instead.
-}
-
-\section{Limitations}{
-
-`req_perform_parallel()` does not support `req_retry()`. Failed pages are
-collected and reported rather than silently dropped. Use [read_socrata()]
-if you need automatic retry on transient failures.
-}
-
-\examples{
-\dontrun{
-df <- read_socrata_parallel(
-  "https://data.somervillema.gov/resource/abcd-1234",
-  app_token = Sys.getenv("SOCRATA_APP_TOKEN"),
-  page_size = 5000L,
-  max_active = 20L
-)
-}
-
+instead of sequentially. Attempts a metadata preflight to determine the
+total row count and pre-build all page requests. If the row count is
+unavailable, falls back to the serial read_socrata strategy.
 }

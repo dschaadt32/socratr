@@ -2,6 +2,14 @@
 
 First release.
 
+## Bug fixes
+
+* Restored serial `write_socrata()`; fixed infinite recursion when `write_socrata_parallel()` fell back to REPLACE
+* Fixed `ls_socrata()` / `get_metadata()` crashes from an undefined `verbose` argument
+* Re-enabled `page_size` and `max_active` validation; empty uploads no longer error on `seq()`
+* Parallel reads now abort on failed pages instead of returning partial results silently
+* Quarantined legacy `RSocrata.R` from the package build; cleaned NAMESPACE imports
+
 ## New features
 
 * `read_socrata()` — fetch Socrata datasets via SODA 3 with automatic pagination

@@ -15,8 +15,76 @@ DEMO_URL <- "https://soda.demo.socrata.com/resource/4334-bgaj"
 DEMO_NROWS <- 1007L
 
 ###############################################################################
-# Group 1 — Date parsing
+# Group — smart read planner
 ###############################################################################
+
+test_that("soql_is_csv_friendly: rejects aggregates", {
+  expect_true(socratr:::soql_is_csv_friendly("SELECT *"))
+  expect_true(socratr:::soql_is_csv_friendly("SELECT name WHERE x > 1"))
+  expect_false(socratr:::soql_is_csv_friendly("SELECT COUNT(*)"))
+  expect_false(socratr:::soql_is_csv_friendly("SELECT region, COUNT(*) GROUP BY region"))
+})
+
+test_that("normalize_parallel_arg accepts TRUE/FALSE/auto", {
+  expect_true(socratr:::normalize_parallel_arg(TRUE))
+  expect_false(socratr:::normalize_parallel_arg(FALSE))
+  expect_identical(socratr:::normalize_parallel_arg("auto"), "auto")
+  expect_error(socratr:::normalize_parallel_arg("maybe"), "parallel")
+})
+
+test_that("resolve_socrata_credentials reads env fallbacks", {
+  skip_if_not_installed("withr")
+  withr::local_envvar(
+    c(
+      SOCRATA_APP_TOKEN = "tok",
+      SOCRATA_USER = "user",
+      SOCRATA_PASSWORD = "pass"
+    )
+  )
+  creds <- socratr:::resolve_socrata_credentials(NULL, NULL, NULL)
+  expect_true(creds$has_token)
+  expect_true(creds$has_basic)
+  expect_equal(creds$app_token, "tok")
+})
+
+test_that("plan_socrata_read: small demo prefers json sequential", {
+  skip_live()
+  plan <- plan_socrata_read(
+    DEMO_URL,
+    app_token = app_token,
+    format = "auto",
+    parallel = "auto"
+  )
+  expect_equal(plan$format, "json")
+  expect_false(plan$parallel)
+  expect_true(any(grepl("format=json", plan$reasons)))
+})
+
+test_that("plan_socrata_read: aggregate soql forces json", {
+  skip_live()
+  plan <- plan_socrata_read(
+    DEMO_URL,
+    soql = "SELECT region, COUNT(*) AS n GROUP BY region",
+    app_token = app_token,
+    format = "auto"
+  )
+  expect_equal(plan$format, "json")
+})
+
+test_that("read_socrata: auto attaches socratr_plan", {
+  skip_live()
+  df <- read_socrata(
+    DEMO_URL,
+    app_token = app_token,
+    max_rows = 25L,
+    format = "auto",
+    parallel = "auto"
+  )
+  plan <- attr(df, "socratr_plan")
+  expect_type(plan, "list")
+  expect_true(plan$format %in% c("json", "csv"))
+  expect_true(is.logical(plan$parallel))
+})
 
 test_that("posixify: ISO 8601 (SODA 3)", {
   expect_equal(
@@ -244,7 +312,13 @@ test_that("read_socrata: column names are clean_names'd", {
 
 test_that("read_socrata: all columns are character by default", {
   skip_live()
-  df <- read_socrata(DEMO_URL, app_token = app_token, coerce = FALSE)
+  df <- read_socrata(
+    DEMO_URL,
+    app_token = app_token,
+    format = "json",
+    parallel = FALSE,
+    coerce = FALSE
+  )
   col_classes <- vapply(df, class, character(1L))
   expect_true(all(col_classes == "character"))
 })

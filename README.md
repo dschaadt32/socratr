@@ -3,6 +3,7 @@
 A fast R interface to [Socrata](https://dev.socrata.com) open data portals.
 
 - **Read** via SODA 3 JSON or SODA 2 CSV, with automatic pagination
+- **Auto** endpoint picker (`format` / `parallel = "auto"`) from size + credentials
 - **Coerce** column types from schema metadata (`coerce = TRUE`)
 - **Write** via SODA 2 upsert / replace (chunked, optional parallel)
 - **List** datasets via the Discovery API
@@ -20,36 +21,19 @@ devtools::install_github("dschaadt32/socratr")
 ```r
 library(socratr)
 
-# JSON (SODA 3) — default
+# Smart defaults: picks CSV vs JSON and sequential vs parallel
 df <- read_socrata("https://data.example.gov/resource/abcd-1234")
+attr(df, "socratr_plan")  # see what was chosen
 
-# CSV (SODA 2) — often faster for large public datasets
+# Inspect the plan without downloading
+plan_socrata_read("https://data.example.gov/resource/abcd-1234")
+
+# Force CSV + type coercion
 df <- read_socrata(
   "https://data.example.gov/resource/abcd-1234",
   format = "csv",
   coerce = TRUE,
   app_token = Sys.getenv("SOCRATA_APP_TOKEN")
-)
-
-# Parallel fetch
-df <- read_socrata_parallel(
-  "https://data.example.gov/resource/abcd-1234",
-  format = "csv",
-  max_active = 10L,
-  app_token = Sys.getenv("SOCRATA_APP_TOKEN")
-)
-
-# List datasets
-ls_socrata("data.example.gov")
-
-# Upload
-write_socrata(
-  dataframe    = my_df,
-  domain       = "data.example.gov",
-  dataset_id   = "abcd-1234",
-  update_mode  = "UPSERT",
-  socrata_user = Sys.getenv("SOCRATA_USER"),
-  password     = Sys.getenv("SOCRATA_PASSWORD")
 )
 ```
 
@@ -73,25 +57,34 @@ Live tests look for `SOCRATA_USER`, `SOCRATA_PASSWORD`, and `SOCRATA_TOKEN`
 
 ## Functions
 
-### `read_socrata()`
+### `read_socrata()` / `plan_socrata_read()`
 
-Fetches a dataset with automatic pagination.
+`read_socrata()` defaults to **`format = "auto"`** and **`parallel = "auto"`**.
+It peeks at metadata (and your credentials) to choose a strategy:
 
-| Argument | Notes |
+| Signal | Choice |
 |---|---|
-| `format` | `"json"` (SODA 3, default) or `"csv"` (SODA 2) |
-| `coerce` | `TRUE` → dates / numbers / checkboxes typed from metadata |
-| `page_size` | Default 5 000 (JSON) or 50 000 (CSV); max 50 000 |
-| `soql` | SoQL string; do not include `LIMIT` / `OFFSET` |
+| ~5k+ rows, simple SoQL | CSV (SODA 2) |
+| Small result or aggregates (`GROUP BY`, `COUNT`, …) | JSON (SODA 3) |
+| ~10k+ rows | Parallel pages |
+| App token / basic auth present | `max_active = 10` |
+| Anonymous | `max_active = 3` |
 
 ```r
+plan <- plan_socrata_read("https://data.example.gov/resource/abcd-1234")
+plan$format
+plan$parallel
+plan$reasons
+
 df <- read_socrata(
   url       = "https://data.example.gov/resource/abcd-1234",
   soql      = "SELECT name, value WHERE value > 100 ORDER BY value DESC",
   app_token = Sys.getenv("SOCRATA_APP_TOKEN"),
-  format    = "json",
+  format    = "auto",     # or "json" / "csv"
+  parallel  = "auto",     # or TRUE / FALSE
   coerce    = FALSE
 )
+attr(df, "socratr_plan")
 ```
 
 ### `read_socrata_parallel()`

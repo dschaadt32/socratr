@@ -152,35 +152,366 @@ maybe_coerce_socrata <- function(
   app_token,
   socrata_user,
   password,
-  verbose = FALSE
+  verbose = FALSE,
+  meta = NULL
 ) {
   if (!isTRUE(coerce) || nrow(df) == 0L) {
     return(df)
   }
-  if (verbose) {
-    message("Fetching metadata for type coercion ...")
-  }
-  meta <- tryCatch(
-    get_metadata(
-      url = url,
-      domain = domain,
-      app_token = app_token,
-      socrata_user = socrata_user,
-      password = password
-    ),
-    error = function(e) {
-      warning(
-        "Type coercion skipped; metadata request failed: ",
-        conditionMessage(e),
-        call. = FALSE
-      )
-      NULL
+  if (is.null(meta)) {
+    if (verbose) {
+      message("Fetching metadata for type coercion ...")
     }
-  )
+    meta <- tryCatch(
+      get_metadata(
+        url = url,
+        domain = domain,
+        app_token = app_token,
+        socrata_user = socrata_user,
+        password = password
+      ),
+      error = function(e) {
+        warning(
+          "Type coercion skipped; metadata request failed: ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+        NULL
+      }
+    )
+  }
   if (is.null(meta)) {
     return(df)
   }
   coerce_socrata_types(df, meta)
+}
+
+#' Resolve credentials from arguments or environment variables
+#' @noRd
+resolve_socrata_credentials <- function(
+  app_token = NULL,
+  socrata_user = NULL,
+  password = NULL
+) {
+  blank <- function(x) {
+    is.null(x) || (is.character(x) && length(x) == 1L && !nzchar(x))
+  }
+
+  if (blank(app_token)) {
+    app_token <- Sys.getenv("SOCRATA_APP_TOKEN", unset = "")
+    if (!nzchar(app_token)) {
+      app_token <- Sys.getenv("SOCRATA_TOKEN", unset = "")
+    }
+    if (!nzchar(app_token)) {
+      app_token <- NULL
+    }
+  }
+  if (blank(socrata_user)) {
+    socrata_user <- Sys.getenv("SOCRATA_USER", unset = "")
+    if (!nzchar(socrata_user)) {
+      socrata_user <- NULL
+    }
+  }
+  if (blank(password)) {
+    password <- Sys.getenv("SOCRATA_PASSWORD", unset = "")
+    if (!nzchar(password)) {
+      password <- Sys.getenv("SOCRATA_KEY", unset = "")
+    }
+    if (!nzchar(password)) {
+      password <- NULL
+    }
+  }
+
+  list(
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = password,
+    has_token = !is.null(app_token),
+    has_basic = !is.null(socrata_user) && !is.null(password)
+  )
+}
+
+#' Whether a SoQL string is a good fit for the SODA 2 CSV path
+#' @noRd
+soql_is_csv_friendly <- function(soql) {
+  s <- trimws(as.character(soql))
+  if (!nzchar(s)) {
+    return(TRUE)
+  }
+  # Aggregates / grouping are more reliable on SODA 3 JSON
+  !grepl(
+    "(?i)\\b(GROUP\\s+BY|HAVING|DISTINCT|COUNT\\s*\\(|SUM\\s*\\(|AVG\\s*\\(|MIN\\s*\\(|MAX\\s*\\()",
+    s,
+    perl = TRUE
+  )
+}
+
+#' Normalize parallel= argument (TRUE / FALSE / "auto")
+#' @noRd
+normalize_parallel_arg <- function(parallel) {
+  if (isTRUE(parallel)) {
+    return(TRUE)
+  }
+  if (identical(parallel, FALSE)) {
+    return(FALSE)
+  }
+  if (is.character(parallel) && length(parallel) == 1L) {
+    p <- tolower(parallel)
+    if (p %in% c("auto", "true", "false")) {
+      if (identical(p, "auto")) {
+        return("auto")
+      }
+      return(identical(p, "true"))
+    }
+  }
+  stop(
+    "`parallel` must be TRUE, FALSE, or \"auto\".",
+    call. = FALSE
+  )
+}
+
+#' Build a smart read plan for a Socrata dataset
+#'
+#' Inspects credentials, SoQL shape, and (when possible) approximate row count
+#' to choose JSON vs CSV and sequential vs parallel fetching.
+#'
+#' Decision rules (when `format` / `parallel` are `"auto"`):
+#' \itemize{
+#'   \item **CSV** when the result looks large (>= 5 000 rows) and SoQL is
+#'     CSV-friendly (no `GROUP BY` / aggregates). Otherwise **JSON**.
+#'   \item **Parallel** when the result looks large (>= 10 000 rows).
+#'   \item **max_active** is 10 with an app token or basic auth, else 3.
+#'   \item **page_size** defaults to 50 000 for CSV and 5 000 for JSON.
+#' }
+#'
+#' Credentials fall back to `SOCRATA_APP_TOKEN` / `SOCRATA_TOKEN`,
+#' `SOCRATA_USER`, and `SOCRATA_PASSWORD` / `SOCRATA_KEY` when arguments
+#' are omitted.
+#'
+#' @inheritParams read_socrata
+#' @param parallel Logical or `"auto"`. Whether to use concurrent page
+#'   requests. Default `"auto"`.
+#' @param max_active Integer or `NULL`. Concurrent connections when parallel.
+#'   If `NULL`, chosen from credentials (10 with auth, else 3).
+#'
+#' @return A named list describing the chosen strategy. Useful fields:
+#'   `format`, `parallel`, `page_size`, `max_active`, `row_count_est`,
+#'   `reasons`, `credentials`, and optionally `meta`.
+#'
+#' @examples
+#' \dontrun{
+#' plan_socrata_read(
+#'   "https://data.somervillema.gov/resource/4pyi-uqq6",
+#'   app_token = Sys.getenv("SOCRATA_APP_TOKEN")
+#' )
+#' }
+#' @export
+plan_socrata_read <- function(
+  url,
+  domain = NULL,
+  soql = "SELECT *",
+  app_token = NULL,
+  socrata_user = NULL,
+  password = NULL,
+  page_size = NULL,
+  max_rows = Inf,
+  format = c("auto", "json", "csv"),
+  parallel = "auto",
+  max_active = NULL,
+  coerce = FALSE,
+  verbose = FALSE
+) {
+  if (missing(url) || !nzchar(trimws(url))) {
+    stop("`url` must be a non-empty string.", call. = FALSE)
+  }
+  format <- match.arg(format)
+  parallel <- normalize_parallel_arg(parallel)
+  creds <- resolve_socrata_credentials(app_token, socrata_user, password)
+
+  reasons <- character()
+  meta <- NULL
+  row_count_est <- NA_integer_
+
+  # Cheap size peek via metadata (also reused for coerce)
+  meta <- tryCatch(
+    get_metadata(
+      url = url,
+      domain = domain,
+      app_token = creds$app_token,
+      socrata_user = creds$socrata_user,
+      password = creds$password
+    ),
+    error = function(e) {
+      reasons <<- c(
+        reasons,
+        paste0("metadata unavailable (", conditionMessage(e), ")")
+      )
+      NULL
+    }
+  )
+  if (!is.null(meta) && !is.null(meta$row_count) && !is.na(meta$row_count)) {
+    row_count_est <- as.integer(meta$row_count)
+    reasons <- c(reasons, sprintf("approx_row_count=%s", format(row_count_est, big.mark = ",")))
+  }
+
+  # Effective rows we might fetch
+  target_rows <- row_count_est
+  if (is.finite(max_rows)) {
+    target_rows <- if (is.na(target_rows)) {
+      as.integer(max_rows)
+    } else {
+      as.integer(min(target_rows, max_rows))
+    }
+    reasons <- c(reasons, sprintf("max_rows=%s", format(as.integer(max_rows), big.mark = ",")))
+  }
+
+  csv_ok <- soql_is_csv_friendly(soql)
+  if (!csv_ok) {
+    reasons <- c(reasons, "soql has aggregates/GROUP BY -> prefer JSON")
+  }
+
+  # Format
+  chosen_format <- format
+  if (identical(format, "auto")) {
+    if (!csv_ok) {
+      chosen_format <- "json"
+      reasons <- c(reasons, "format=json (SoQL not CSV-friendly)")
+    } else if (!is.na(target_rows) && target_rows >= 5000L) {
+      chosen_format <- "csv"
+      reasons <- c(reasons, "format=csv (large result; CSV usually faster)")
+    } else if (!is.na(target_rows) && target_rows < 5000L) {
+      chosen_format <- "json"
+      reasons <- c(reasons, "format=json (small result; JSON fine)")
+    } else {
+      # Unknown size: CSV is a strong default for open data dumps
+      chosen_format <- "csv"
+      reasons <- c(reasons, "format=csv (size unknown; default to CSV)")
+    }
+  } else {
+    reasons <- c(reasons, sprintf("format=%s (user override)", chosen_format))
+  }
+
+  # Parallel
+  chosen_parallel <- parallel
+  if (identical(parallel, "auto")) {
+    if (!is.na(target_rows) && target_rows >= 10000L) {
+      chosen_parallel <- TRUE
+      reasons <- c(reasons, "parallel=TRUE (>=10k rows)")
+    } else if (!is.na(target_rows) && target_rows < 10000L) {
+      chosen_parallel <- FALSE
+      reasons <- c(reasons, "parallel=FALSE (<10k rows)")
+    } else {
+      # Unknown size: parallel with a COUNT preflight is still usually worth it
+      # for open portals, but keep it on when CSV (offset pages) or JSON
+      chosen_parallel <- TRUE
+      reasons <- c(reasons, "parallel=TRUE (size unknown; enable with preflight)")
+    }
+  } else {
+    reasons <- c(
+      reasons,
+      sprintf("parallel=%s (user override)", chosen_parallel)
+    )
+  }
+
+  # page_size
+  chosen_page_size <- page_size
+  if (is.null(chosen_page_size)) {
+    chosen_page_size <- if (identical(chosen_format, "csv")) 50000L else 5000L
+    reasons <- c(reasons, sprintf("page_size=%d (default for %s)", chosen_page_size, chosen_format))
+  } else {
+    chosen_page_size <- as.integer(chosen_page_size)
+    reasons <- c(reasons, sprintf("page_size=%d (user override)", chosen_page_size))
+  }
+  if (is.na(chosen_page_size) || chosen_page_size < 1L || chosen_page_size > 50000L) {
+    stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
+  }
+
+  # max_active
+  chosen_max_active <- max_active
+  if (isTRUE(chosen_parallel)) {
+    if (is.null(chosen_max_active)) {
+      chosen_max_active <- if (creds$has_token || creds$has_basic) 10L else 3L
+      reasons <- c(
+        reasons,
+        sprintf(
+          "max_active=%d (%s)",
+          chosen_max_active,
+          if (creds$has_token || creds$has_basic) {
+            "authenticated"
+          } else {
+            "anonymous; conservative"
+          }
+        )
+      )
+    } else {
+      chosen_max_active <- as.integer(chosen_max_active)
+      reasons <- c(reasons, sprintf("max_active=%d (user override)", chosen_max_active))
+    }
+    if (is.na(chosen_max_active) || chosen_max_active < 1L || chosen_max_active > 10L) {
+      stop("`max_active` must be between 1 and 10.", call. = FALSE)
+    }
+  } else {
+    chosen_max_active <- 1L
+  }
+
+  if (creds$has_token) {
+    reasons <- c(reasons, "app_token=yes")
+  } else {
+    reasons <- c(reasons, "app_token=no")
+  }
+  if (creds$has_basic) {
+    reasons <- c(reasons, "basic_auth=yes")
+  }
+
+  if (verbose) {
+    message("socratr plan:")
+    for (r in reasons) {
+      message("  - ", r)
+    }
+  }
+
+  list(
+    url = url,
+    domain = domain,
+    soql = soql,
+    format = chosen_format,
+    parallel = isTRUE(chosen_parallel),
+    page_size = chosen_page_size,
+    max_active = chosen_max_active,
+    max_rows = max_rows,
+    coerce = isTRUE(coerce),
+    row_count_est = row_count_est,
+    reasons = reasons,
+    credentials = creds[c("app_token", "socrata_user", "password", "has_token", "has_basic")],
+    meta = meta
+  )
+}
+
+#' Attach plan metadata to a result tibble
+#' @noRd
+with_socratr_plan <- function(df, plan) {
+  # Drop bulky meta / raw secrets from the attribute
+  attr_plan <- plan
+  attr_plan$meta <- NULL
+  if (!is.null(attr_plan$credentials)) {
+    attr_plan$credentials$app_token <- if (isTRUE(plan$credentials$has_token)) {
+      "(set)"
+    } else {
+      NULL
+    }
+    attr_plan$credentials$socrata_user <- if (isTRUE(plan$credentials$has_basic)) {
+      "(set)"
+    } else {
+      NULL
+    }
+    attr_plan$credentials$password <- if (isTRUE(plan$credentials$has_basic)) {
+      "(set)"
+    } else {
+      NULL
+    }
+  }
+  attr(df, "socratr_plan") <- attr_plan
+  df
 }
 
 #' Read via SODA 2 CSV with $limit / $offset pagination
@@ -327,9 +658,10 @@ read_socrata_csv <- function(
 
 #' Read a Socrata dataset
 #'
-#' Fetches data from a Socrata portal. By default uses the SODA 3 JSON query
-#' API. Set `format = "csv"` to use the SODA 2 CSV download path (often faster
-#' for large public datasets, matching RSocrata's CSV behaviour).
+#' Fetches data from a Socrata portal. By default (`format = "auto"`,
+#' `parallel = "auto"`) chooses JSON vs CSV and sequential vs parallel from
+#' dataset size, SoQL shape, and available credentials via
+#' [plan_socrata_read()].
 #'
 #' @section Pagination:
 #' SODA 3 exposes only page-number pagination - there is no server-side cursor.
@@ -348,39 +680,44 @@ read_socrata_csv <- function(
 #'   `"SELECT name, value WHERE value > 100 ORDER BY value DESC"`.
 #' @param app_token   Character (optional). Socrata Application Token, sent as
 #'   the `X-App-Token` header. Strongly recommended - raises the anonymous
-#'   rate limit significantly.
+#'   rate limit significantly. Falls back to `SOCRATA_APP_TOKEN` /
+#'   `SOCRATA_TOKEN`.
 #' @param socrata_user Character (optional). Socrata account email or API Key
-#'   ID. Required for private datasets.
+#'   ID. Required for private datasets. Falls back to `SOCRATA_USER`.
 #' @param password    Character (optional). Socrata password or API Secret Key.
-#' @param page_size   Integer. Rows fetched per request (default 5 000 for
-#'   JSON, 50 000 when `format = "csv"`; max 50 000).
+#'   Falls back to `SOCRATA_PASSWORD` / `SOCRATA_KEY`.
+#' @param page_size   Integer. Rows fetched per request. If `NULL`, chosen by
+#'   the read plan (5 000 JSON / 50 000 CSV; max 50 000).
 #' @param max_rows    Integer or `Inf` (default). Hard cap on total rows
 #'   returned. Useful for sampling or testing without pulling a full dataset.
-#' @param format      Character. `"json"` (SODA 3, default) or `"csv"` (SODA 2).
+#' @param format      `"auto"` (default), `"json"` (SODA 3), or `"csv"` (SODA 2).
+#' @param parallel    `TRUE`, `FALSE`, or `"auto"` (default). `"auto"` enables
+#'   concurrent fetches for large results (>= ~10k rows).
+#' @param max_active  Integer or `NULL`. Concurrent connections when parallel.
+#'   If `NULL`, 10 with credentials / app token, else 3.
 #' @param coerce      Logical. If `TRUE`, fetch schema metadata and coerce
 #'   columns to native R types (dates -> `POSIXct`, numbers -> `numeric`,
 #'   checkboxes -> `logical`), like RSocrata's automatic date conversion.
 #'   Default `FALSE` (all columns remain character).
-#' @param verbose     Logical. If `TRUE`, prints a one-line progress message
-#'   per page fetched (default `FALSE`).
+#' @param verbose     Logical. If `TRUE`, prints progress and the chosen plan
+#'   (default `FALSE`).
 #'
 #' @return A [tibble::tibble()]. With `coerce = FALSE` (default), all columns
 #'   are character strings. With `coerce = TRUE`, typed columns are converted.
+#'   The chosen strategy is attached as `attr(x, "socratr_plan")`.
+#'
+#' @seealso [plan_socrata_read()], [read_socrata_parallel()]
 #'
 #' @examples
 #' \dontrun{
-#' # Full URL (JSON)
-#' df <- read_socrata("https://data.somervillema.gov/resource/abcd-1234")
+#' # Smart defaults: picks CSV/JSON and parallel from size + credentials
+#' df <- read_socrata("https://data.somervillema.gov/resource/4pyi-uqq6")
+#' attr(df, "socratr_plan")
 #'
-#' # CSV download (often faster for large public datasets)
+#' # Force CSV + coercion
 #' df <- read_socrata(
 #'   "https://data.somervillema.gov/resource/abcd-1234",
-#'   format = "csv"
-#' )
-#'
-#' # Auto date / type coercion
-#' df <- read_socrata(
-#'   "https://data.somervillema.gov/resource/abcd-1234",
+#'   format = "csv",
 #'   coerce = TRUE
 #' )
 #' }
@@ -402,45 +739,108 @@ read_socrata <- function(
   password = NULL,
   page_size = NULL,
   max_rows = Inf,
-  format = c("json", "csv"),
+  format = c("auto", "json", "csv"),
+  parallel = "auto",
+  max_active = NULL,
   coerce = FALSE,
   verbose = FALSE
 ) {
-  # -- Validate -----
   if (missing(url) || !nzchar(trimws(url))) {
     stop("`url` must be a non-empty string.", call. = FALSE)
   }
   format <- match.arg(format)
-  if (is.null(page_size)) {
-    page_size <- if (identical(format, "csv")) 50000L else 5000L
-  }
-  page_size <- as.integer(page_size)
-  if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
-    stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
-  }
+  parallel <- normalize_parallel_arg(parallel)
 
-  if (identical(format, "csv")) {
-    df <- read_socrata_csv(
+  plan <- plan_socrata_read(
+    url = url,
+    domain = domain,
+    soql = soql,
+    app_token = app_token,
+    socrata_user = socrata_user,
+    password = password,
+    page_size = page_size,
+    max_rows = max_rows,
+    format = format,
+    parallel = parallel,
+    max_active = max_active,
+    coerce = coerce,
+    verbose = verbose
+  )
+
+  creds <- plan$credentials
+  df <- if (isTRUE(plan$parallel)) {
+    read_socrata_parallel(
       url = url,
       domain = domain,
       soql = soql,
-      app_token = app_token,
-      socrata_user = socrata_user,
-      password = password,
-      page_size = page_size,
+      app_token = creds$app_token,
+      socrata_user = creds$socrata_user,
+      password = creds$password,
+      page_size = plan$page_size,
+      max_rows = max_rows,
+      max_active = plan$max_active,
+      format = plan$format,
+      coerce = FALSE,
+      verbose = verbose
+    )
+  } else if (identical(plan$format, "csv")) {
+    read_socrata_csv(
+      url = url,
+      domain = domain,
+      soql = soql,
+      app_token = creds$app_token,
+      socrata_user = creds$socrata_user,
+      password = creds$password,
+      page_size = plan$page_size,
       max_rows = max_rows,
       verbose = verbose
     )
-    return(maybe_coerce_socrata(
-      df,
-      coerce,
-      url,
-      domain,
-      app_token,
-      socrata_user,
-      password,
-      verbose
-    ))
+  } else {
+    read_socrata_json(
+      url = url,
+      domain = domain,
+      soql = soql,
+      app_token = creds$app_token,
+      socrata_user = creds$socrata_user,
+      password = creds$password,
+      page_size = plan$page_size,
+      max_rows = max_rows,
+      verbose = verbose
+    )
+  }
+
+  # Drop nested plan attrs from parallel path before re-attaching
+  attr(df, "socratr_plan") <- NULL
+  df <- maybe_coerce_socrata(
+    df,
+    plan$coerce,
+    url,
+    domain,
+    creds$app_token,
+    creds$socrata_user,
+    creds$password,
+    verbose,
+    meta = plan$meta
+  )
+  with_socratr_plan(df, plan)
+}
+
+#' Sequential SODA 3 JSON read (internal)
+#' @noRd
+read_socrata_json <- function(
+  url,
+  domain = NULL,
+  soql = "SELECT *",
+  app_token = NULL,
+  socrata_user = NULL,
+  password = NULL,
+  page_size = 5000L,
+  max_rows = Inf,
+  verbose = FALSE
+) {
+  page_size <- as.integer(page_size)
+  if (is.na(page_size) || page_size < 1L || page_size > 50000L) {
+    stop("`page_size` must be between 1 and 50 000.", call. = FALSE)
   }
 
   ds <- resolve_dataset(url, domain)
@@ -577,18 +977,7 @@ read_socrata <- function(
     use.names = TRUE
   )
   names(final_dt) <- janitor::make_clean_names(names(final_dt))
-
-  df <- tibble::as_tibble(final_dt)
-  maybe_coerce_socrata(
-    df,
-    coerce,
-    url,
-    domain,
-    app_token,
-    socrata_user,
-    password,
-    verbose
-  )
+  tibble::as_tibble(final_dt)
 }
 
 # -- Write --------
@@ -1233,7 +1622,7 @@ read_socrata_parallel <- function(
     if (verbose) {
       message("Row count unavailable. Using serial fetch ...")
     }
-    return(read_socrata(
+    df <- read_socrata_json(
       url = url,
       domain = domain,
       soql = soql,
@@ -1242,9 +1631,17 @@ read_socrata_parallel <- function(
       password = password,
       page_size = page_size,
       max_rows = max_rows,
-      format = "json",
-      coerce = coerce,
       verbose = verbose
+    )
+    return(maybe_coerce_socrata(
+      df,
+      coerce,
+      url,
+      domain,
+      app_token,
+      socrata_user,
+      password,
+      verbose
     ))
   }
 

@@ -2,6 +2,10 @@
 
 ## New features
 
+* `format = "auto"` / `parallel = "auto"` on `read_socrata()` — picks CSV vs JSON
+  and sequential vs parallel from dataset size, SoQL shape, and credentials.
+* `plan_socrata_read()` — inspect the chosen strategy without downloading.
+* Credentials fall back to `SOCRATA_*` environment variables when omitted.
 * `format = "csv"` on `read_socrata()` / `read_socrata_parallel()` for SODA 2
   CSV downloads (often faster on large public datasets).
 * `coerce = TRUE` for automatic schema-based type coercion (dates → `POSIXct`,

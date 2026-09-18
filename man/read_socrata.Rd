@@ -13,7 +13,9 @@ read_socrata(
   password = NULL,
   page_size = NULL,
   max_rows = Inf,
-  format = c("json", "csv"),
+  format = c("auto", "json", "csv"),
+  parallel = "auto",
+  max_active = NULL,
   coerce = FALSE,
   verbose = FALSE
 )
@@ -32,37 +34,47 @@ handled internally. Example:
 
 \item{app_token}{Character (optional). Socrata Application Token, sent as
 the \code{X-App-Token} header. Strongly recommended - raises the anonymous
-rate limit significantly.}
+rate limit significantly. Falls back to \code{SOCRATA_APP_TOKEN} /
+\code{SOCRATA_TOKEN}.}
 
 \item{socrata_user}{Character (optional). Socrata account email or API Key
-ID. Required for private datasets.}
+ID. Required for private datasets. Falls back to \code{SOCRATA_USER}.}
 
-\item{password}{Character (optional). Socrata password or API Secret Key.}
+\item{password}{Character (optional). Socrata password or API Secret Key.
+Falls back to \code{SOCRATA_PASSWORD} / \code{SOCRATA_KEY}.}
 
-\item{page_size}{Integer. Rows fetched per request (default 5 000 for
-JSON, 50 000 when \code{format = "csv"}; max 50 000).}
+\item{page_size}{Integer. Rows fetched per request. If \code{NULL}, chosen by
+the read plan (5 000 JSON / 50 000 CSV; max 50 000).}
 
 \item{max_rows}{Integer or \code{Inf} (default). Hard cap on total rows
 returned. Useful for sampling or testing without pulling a full dataset.}
 
-\item{format}{Character. \code{"json"} (SODA 3, default) or \code{"csv"} (SODA 2).}
+\item{format}{\code{"auto"} (default), \code{"json"} (SODA 3), or \code{"csv"} (SODA 2).}
+
+\item{parallel}{\code{TRUE}, \code{FALSE}, or \code{"auto"} (default). \code{"auto"} enables
+concurrent fetches for large results (>= ~10k rows).}
+
+\item{max_active}{Integer or \code{NULL}. Concurrent connections when parallel.
+If \code{NULL}, 10 with credentials / app token, else 3.}
 
 \item{coerce}{Logical. If \code{TRUE}, fetch schema metadata and coerce
 columns to native R types (dates -> \code{POSIXct}, numbers -> \code{numeric},
 checkboxes -> \code{logical}), like RSocrata's automatic date conversion.
 Default \code{FALSE} (all columns remain character).}
 
-\item{verbose}{Logical. If \code{TRUE}, prints a one-line progress message
-per page fetched (default \code{FALSE}).}
+\item{verbose}{Logical. If \code{TRUE}, prints progress and the chosen plan
+(default \code{FALSE}).}
 }
 \value{
 A \code{\link[tibble:tibble]{tibble::tibble()}}. With \code{coerce = FALSE} (default), all columns
 are character strings. With \code{coerce = TRUE}, typed columns are converted.
+The chosen strategy is attached as \code{attr(x, "socratr_plan")}.
 }
 \description{
-Fetches data from a Socrata portal. By default uses the SODA 3 JSON query
-API. Set \code{format = "csv"} to use the SODA 2 CSV download path (often faster
-for large public datasets, matching RSocrata's CSV behaviour).
+Fetches data from a Socrata portal. By default (\code{format = "auto"},
+\code{parallel = "auto"}) chooses JSON vs CSV and sequential vs parallel from
+dataset size, SoQL shape, and available credentials via
+\code{\link[=plan_socrata_read]{plan_socrata_read()}}.
 }
 \section{Pagination}{
 
@@ -75,20 +87,19 @@ data has been retrieved. CSV downloads use \verb{$limit} / \verb{$offset} (or
 
 \examples{
 \dontrun{
-# Full URL (JSON)
-df <- read_socrata("https://data.somervillema.gov/resource/abcd-1234")
+# Smart defaults: picks CSV/JSON and parallel from size + credentials
+df <- read_socrata("https://data.somervillema.gov/resource/4pyi-uqq6")
+attr(df, "socratr_plan")
 
-# CSV download (often faster for large public datasets)
+# Force CSV + coercion
 df <- read_socrata(
   "https://data.somervillema.gov/resource/abcd-1234",
-  format = "csv"
-)
-
-# Auto date / type coercion
-df <- read_socrata(
-  "https://data.somervillema.gov/resource/abcd-1234",
+  format = "csv",
   coerce = TRUE
 )
 }
 
+}
+\seealso{
+\code{\link[=plan_socrata_read]{plan_socrata_read()}}, \code{\link[=read_socrata_parallel]{read_socrata_parallel()}}
 }

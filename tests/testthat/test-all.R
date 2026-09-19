@@ -14,6 +14,15 @@ if (!nzchar(app_token)) {
 DEMO_URL <- "https://soda.demo.socrata.com/resource/4334-bgaj"
 DEMO_NROWS <- 1007L
 
+# Skip live network tests on CRAN or when no credentials are available.
+skip_live <- function() {
+  skip_on_cran()
+  skip_if(
+    !nzchar(socrata_user) && !nzchar(app_token),
+    "No Socrata credentials available — set SOCRATA_USER/SOCRATA_PASSWORD or SOCRATA_TOKEN."
+  )
+}
+
 ###############################################################################
 # Group — smart read planner
 ###############################################################################
@@ -232,14 +241,6 @@ test_that("ls_socrata: invalid limit errors", {
 ###############################################################################
 # Group 4 — Live API: basic reads  (skip on CRAN & when creds absent)
 ###############################################################################
-
-skip_live <- function() {
-  skip_on_cran()
-  skip_if(
-    !nzchar(socrata_user) && !nzchar(app_token),
-    "No Socrata credentials available — set SOCRATA_USER/SOCRATA_PASSWORD or SOCRATA_TOKEN."
-  )
-}
 
 test_that("read_socrata: returns a tibble from a full URL", {
   skip_live()
